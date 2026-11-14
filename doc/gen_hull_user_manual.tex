@@ -28,7 +28,7 @@
 %=====================================================================
 \section{Overview}
 \cmd{gen\_hull.py} generates the hull surface of a motor yacht, $L = 20$--$50$\,m, with a
-classical bulbous bow, from 33 shape parameters and one fixed datum, the displaced volume.
+classical bulbous bow, from 30 shape parameters and one fixed datum, the displaced volume.
 It writes:
 \begin{itemize}
 \item a structured surface grid (PLOT3D) for CFD codes;
@@ -118,7 +118,7 @@ then contain these control points \\
 %=====================================================================
 \section{Parameters}
 \label{sec:params}
-All 33 shape parameters and the fixed datum of Section~\ref{sec:fixed} are required (order does
+All 30 shape parameters and the fixed datum of Section~\ref{sec:fixed} are required (order does
 not matter). Relative parameters (marked R) place a quantity
 within its admissible range: 0 is one end, 1 the other.
 
@@ -129,7 +129,7 @@ within its admissible range: 0 is one end, 1 the other.
 \multicolumn{4}{l}{\emph{Main dimensions}}\\
 1 & \cmd{L} & 20--50 & length transom--forward perpendicular [m] \\
 2 & \cmd{beam\_rel} R & 0--1 & beam within its admissible range: 0 = narrowest, 1 = widest. $B$ (maximum
-waterline beam) is chosen so that $L/B \in [3.5, 5.2]$ and $B/T \in [2.4, 3.6]$; the draft $T$ follows from the volume \\
+waterline beam) is chosen so that $L/B \in [3.5, 6.0]$ and $B/T \in [2.4, 3.6]$; the draft $T$ follows from the volume \\
 3 & \cmd{F\_over\_L} & 0.04--0.08 & freeboard at the transom $/L$ \\
 4 & \cmd{F\_bow\_over\_L} & 0.08--0.14 & freeboard at the stem $/L$ \\
 \multicolumn{4}{l}{\emph{Volume distribution (sectional area curve)}}\\
@@ -143,7 +143,7 @@ forebody ($C_{P,fwd} \ge 0.55$), 1 = fullest. The midship position $x_{max}$ is 
 9 & \cmd{L\_pmb} & 0--0.12 & maximum length of the parallel middle body $/L$; shortened
 automatically if needed \\
 \multicolumn{4}{l}{\emph{Bow waterlines}}\\
-10 & \cmd{bow\_convexity} & 0--1 & 0 = waterlines concave near the stem (blade entrance, zero
+10 & \cmd{bow\_convexity} & 0--1 & $\ge 0.5$: straight, convex forward waterlines (no inflection); below 0.5 increasingly concave near the stem, up to 0 = blade entrance (zero
 entrance angle), 1 = convex waterlines \\
 11 & \cmd{entrance\_angle} R & 0--1 & waterline entrance half-angle within its reachable range:
 0 = smallest, 1 = largest (U-shaped vs V-shaped bow sections, at the same volume) \\
@@ -156,30 +156,26 @@ semi-displacement \\
 16 & \cmd{keel\_rise\_short} & 0--1 & 0 = keel rises gradually over the whole run, 1 = short rise near the
 transom with parallel waterlines aft \\
 \multicolumn{4}{l}{\emph{Sections and topsides}}\\
-17 & \cmd{bilge\_softness} & 2--6 & bilge exponent amidships (low = soft round bilge) \\
+17 & \cmd{bilge\_softness} & 2--6 & bilge exponent amidships (low = soft round bilge); it softens to 2 towards the stem \\
 18 & \cmd{bilge\_softness\_aft} & 2--12 & bilge exponent at the transom (high = near chine) \\
 19 & \cmd{flare\_over\_L} & 0--0.03 & flare of the forward topsides $/L$ \\
 20 & \cmd{flare\_aft\_over\_L} & $-0.01$--0.01 & flare of aft and midship topsides $/L$ (negative = tumblehome) \\
 \multicolumn{4}{l}{\emph{Stem}}\\
-21 & \cmd{stem\_blend\_over\_L} & 0.005--0.02 & length of the stem rounding $/L$ \\
+21 & \cmd{stem\_radius\_over\_L} & 0.001--0.005 & radius of the stem rounding $/L$ (3--15\,cm at $L=30$\,m); the waterline stays straight up to the rounded nose \\
 22 & \cmd{stem\_rake} & 0--30 & stem inclination from vertical, top forward [deg] \\
-23 & \cmd{stem\_curvature} & $-0.25$--0.25 & stem curvature above the waterline, fraction of the overhang
+23 & \cmd{stem\_curvature} & $-0.25$--0.25 & stem curvature above the waterline, fraction of the overhang (below the waterline the rake fades out, so the stem meets the bulb vertically)
 (+ convex, $-$ concave) \\
-\multicolumn{4}{l}{\emph{Skeg}}\\
-24 & \cmd{skeg\_depth} & 0--1 & skeg depth as a fraction of the keel rise (0 = no skeg) \\
-25 & \cmd{skeg\_aft\_end} & 0.02--0.20 & aft end of the skeg $/L$ from the transom \\
-26 & \cmd{skeg\_thick\_over\_B} & 0.01--0.04 & skeg thickness $/B$ \\
 \multicolumn{4}{l}{\emph{Bulbous bow (Kracht~\cite{kracht1978})}}\\
-27 & \cmd{C\_BB} & 0.08--0.25 & breadth parameter $B_B/B$, breadth at the forward perpendicular \\
-28 & \cmd{C\_LPR} & 0.015--0.045 & length parameter $L_{PR}/L$, protrusion beyond the forward perpendicular \\
-29 & \cmd{C\_ZB} & 0.35--0.62 & height parameter $Z_B/T$, height of the bulb tip \\
-30 & \cmd{bulb\_type} R & 0--1 & section type within the admissible range: 0 = $\Delta$ (volume low),
+24 & \cmd{C\_BB} & 0.08--0.25 & breadth parameter $B_B/B$, breadth at the forward perpendicular \\
+25 & \cmd{C\_LPR} & 0.015--0.045 & length parameter $L_{PR}/L$, protrusion beyond the forward perpendicular \\
+26 & \cmd{C\_ZB} & 0.35--0.62 & height parameter $Z_B/T$, height of the bulb tip \\
+27 & \cmd{bulb\_type} R & 0--1 & section type within the admissible range: 0 = $\Delta$ (volume low),
 1 = $\nabla$ (volume high); the bulb top always stays below the waterline \\
-31 & \cmd{bulb\_fair\_over\_L} & 0.05--0.20 & length over which the bulb fairs into the hull aft of the
+28 & \cmd{bulb\_fair\_over\_L} & 0.05--0.20 & length over which the bulb fairs into the hull aft of the
 forward perpendicular $/L$ \\
-32 & \cmd{bulb\_rise} & 0--0.5 & nose-up bend: height of maximum breadth $Z_B$ at the tip,
+29 & \cmd{bulb\_rise} & 0--0.5 & nose-up bend: height of maximum breadth $Z_B$ at the tip,
 $Z_B(1-\text{bulb\_rise})$ aft \\
-33 & \cmd{bulb\_implicit} & 0--1 & 0 = bulb, skeg and stem volume added to the bare hull; 1 = compensated, so
+30 & \cmd{bulb\_implicit} & 0--1 & 0 = bulb and stem volume added to the bare hull; 1 = compensated, so
 the complete hull has exactly \cmd{Cp} and \cmd{LCB} \\
 \bottomrule
 \end{longtable}
@@ -195,10 +191,10 @@ the complete hull has exactly \cmd{Cp} and \cmd{LCB} \\
 \begin{longtable}{L{3.0cm}L{12.3cm}}
 \toprule
 Name & Meaning \\ \midrule
-\cmd{volume} & displaced volume of the complete hull (bulb, skeg and stem rounding included) at the
+\cmd{volume} & displaced volume of the complete hull (bulb and stem rounding included) at the
 design waterline [m$^3$]. It is matched exactly: with $L$, $C_P$ and $C_M$ given it fixes the
 product $B\,T$, which \cmd{beam\_rel} splits into beam and draft. Realistic proportions exist
-only if, approximately, $0.0062\,L^3 \le \nabla \le 0.0143\,L^3$ (e.g. 167--386\,m$^3$ at
+only if, approximately, $0.0046\,L^3 \le \nabla \le 0.0143\,L^3$ (e.g. 125--386\,m$^3$ at
 $L = 30$\,m); the exact limits depend on $C_P$ and $C_M$, and a combination outside them is
 reported by \cmd{chk\_proportions} \\
 \bottomrule
@@ -246,8 +242,8 @@ faces:
 \cmd{--step-half} writes the starboard faces only, and \cmd{--step-open} the hull faces only.
 
 \subsection{Hydrostatics: \cmd{hull\_hydro.dat}}
-One \cmd{value = name} per line, at the design waterline, for the complete hull (bulb, skeg and
-stem included) unless stated otherwise.
+One \cmd{value = name} per line, at the design waterline, for the complete hull (bulb and stem
+included) unless stated otherwise.
 \begin{longtable}{L{3.0cm}L{12.3cm}}
 \toprule
 Group & Keys \\ \midrule
@@ -281,7 +277,7 @@ $S_{wet}$, $C_B$, $C_{WP}$.
 \section{Troubleshooting}
 \begin{description}
 \item[\cmd{missing parameters / unknown parameters}] the parameter file does not contain exactly the
-  33 shape parameters and the fixed \cmd{volume} of Section~\ref{sec:params} (names are checked;
+  30 shape parameters and the fixed \cmd{volume} of Section~\ref{sec:params} (names are checked;
   order does not matter).
 \item[\cmd{variant NOT VALID}] look at the \cmd{chk\_*} keys in \cmd{hull\_hydro.dat}. Within
   the bounds of Section~\ref{sec:params} this is not expected; outside them it can happen.

@@ -1,5 +1,5 @@
-# Parameters of gen_hull.py (default example: 30 m motor yacht)
-# Format: value = name   (all 33 shape parameters and the fixed data are required; order does not matter)
+# Parameters of gen_hull.py (default example: 30 m motor yacht, 150 m^3)
+# Format: value = name   (all 30 shape parameters and the fixed data are required; order does not matter)
 # Meaning and admissible bounds: see doc/gen_hull_user_manual.pdf, section 'Parameters'
 
 30.000000    = L
@@ -11,7 +11,7 @@
 -0.030000    = LCB
 0.500000     = bow_fullness
 0.040000     = L_pmb
-0.500000     = bow_convexity
+0.750000     = bow_convexity
 0.500000     = entrance_angle
 0.100000     = transom_imm
 0.800000     = transom_beam
@@ -22,12 +22,9 @@
 4.000000     = bilge_softness_aft
 0.015000     = flare_over_L
 0.000000     = flare_aft_over_L
-0.010000     = stem_blend_over_L
+0.002000     = stem_radius_over_L
 25.000000    = stem_rake
 0.000000     = stem_curvature
-0.500000     = skeg_depth
-0.080000     = skeg_aft_end
-0.020000     = skeg_thick_over_B
 0.150000     = C_BB
 0.030000     = C_LPR
 0.500000     = C_ZB
@@ -36,4 +33,4 @@
 0.200000     = bulb_rise
 0.500000     = bulb_implicit
 # fixed data
-251.000000   = volume
+150.000000   = volume

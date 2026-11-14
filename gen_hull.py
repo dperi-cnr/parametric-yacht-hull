@@ -12,8 +12,7 @@ PARAM_NAMES = [
     "transom_imm", "transom_beam", "c_transom", "transom_rake",
     "keel_rise_short", "bilge_softness", "bilge_softness_aft",
     "flare_over_L", "flare_aft_over_L",
-    "stem_blend_over_L", "stem_rake", "stem_curvature",
-    "skeg_depth", "skeg_aft_end", "skeg_thick_over_B",
+    "stem_radius_over_L", "stem_rake", "stem_curvature",
     "C_BB", "C_LPR", "C_ZB", "bulb_type", "bulb_fair_over_L", "bulb_rise", "bulb_implicit"
 ]
 
@@ -30,7 +29,11 @@ BULB_MIN_AMP = 0.30          # minimum bulb amplitude / B_B / 2 (bulb always vis
 BULB_TOP_MAX = 0.95          # bulb top H_B at most at this fraction of the draft (bulb always submerged)
 BULB_ZM_RANGE = (0.35, 0.70)  # range of Z_B / H_B spanned by bulb_type in [0, 1] (Delta -> Nabla)
 TRANSOM_BLEND_FRAC = 0.08    # aft stretch (fraction of L) over which the transom rake is blended
-SKEG_FADE_FRAC = 0.05        # length (fraction of L) of the blends at the skeg ends
+BULB_FILL_TOP = 0.95         # aft of the FP the bulb top rises towards this fraction of the draft (fills the neck)
+BULB_NODE_FRAC = 0.15        # share of the longitudinal grid nodes reserved for the bulb and its fairing
+STEM_ROUND_LEN = 0.05        # length scale (fraction of L) of the stem rounding term; it fades out between 2 and 5 times this
+Q_BOW = 2.0                  # bilge exponent at the stem: forward sections (V-shaped) always turn softly
+STEM_FADE_DEPTH = 0.5        # below the waterline the stem rake fades out over this fraction of the draft
 CP_FWD_RANGE = (0.55, 0.90)  # admissible forebody prismatic (below: knife-edge bow, always hollow)
 CP_AFT_RANGE = (0.60, 0.95)  # admissible afterbody prismatic (transom included)
 XM_RANGE = (0.40, 0.62)      # admissible position of the midship section (centre of the parallel middle body) / L
@@ -41,7 +44,7 @@ CONVEX_RAMP = 0.02           # above CONVEX_MIN_P the convex weight grows from 0
 SECTION_Q_GRID = np.arange(1.5, 14.01, 0.5)   # tabulated bilge exponents for the section family
 
 
-LB_RANGE = (3.5, 5.2)        # admissible L / B (B maximum waterline beam)
+LB_RANGE = (3.5, 6.0)        # admissible L / B (B maximum waterline beam)
 BT_RANGE = (2.4, 3.6)        # admissible B / T
 
 
@@ -61,7 +64,7 @@ def beam_window(p, bt):
 
 def dimensions(p):
     """
-    Absolute dimensions [m]. The displaced volume (complete hull: bulb, skeg and stem included)
+    Absolute dimensions [m]. The displaced volume (complete hull: bulb and stem included)
     is given: B T = kappa volume / (Cp Cm L), with kappa found by iteration (_bt_correction) so
     that the volume of the complete hull is exact (kappa = 1 with the compensated bulb, except in
     extreme corners). B is chosen by beam_rel within beam_window (realistic L / B and
@@ -85,7 +88,7 @@ def _bt_correction(p):
     Factor kappa on the product B T so that the complete hull has the given volume, corrected by
     fixed-point iteration (volume ~ kappa). With the implicit bulb (bulb_implicit = 1) kappa = 1
     already holds unless the compensated bare hull is not reachable (extreme corners, see
-    _sac_layout); with an additive bulb, bulb, skeg and stem add volume.
+    _sac_layout); with an additive bulb, bulb and stem add volume.
     """
     key = tuple(float(p[n]) for n in ALL_NAMES)
     if key in _BT_CACHE:
@@ -188,6 +191,17 @@ def _branch(t, P, lam):
     if lam_eff > 0.0:
         out = (1.0 - lam_eff) * out + lam_eff * _convex(t, P)
     return out
+
+
+def bow_lambda(p):
+    """
+    Weight of the convex family in the forward branch from bow_convexity: the upper half of the
+    range (bow_convexity >= 0.5) is fully convex (straight entrance, no inflection); below 0.5 the
+    branch blends smoothly (C2) towards the hollow family, which is reached at bow_convexity = 0.
+    Any weight below 1 leaves an inflection, so the hollow, small-angle bow is an option of the
+    lower half of the range instead of the rule.
+    """
+    return float(_smootherstep(min(p['bow_convexity'] / 0.5, 1.0)))
 
 
 def _sac_eval(xi, xa, xf, a_T, F_aft, cp_fwd, lam_fwd):
@@ -320,7 +334,7 @@ def _form_core(p, cp, lcb):
     rho_T = p['transom_imm'] * p['transom_beam']
     a_T = rho_T * p['c_transom'] / p['Cm']
     l_pmb, xm, cp_aft, cp_fwd, cp, lcb = _sac_layout(float(cp), float(lcb), float(p['bow_fullness']),
-                                                     float(p['L_pmb']), float(a_T), float(p['bow_convexity']))
+                                                     float(p['L_pmb']), float(a_T), bow_lambda(p))
     # Entrance angle: at the FP b = B_half rho, rho = a Cm / c_bow (a -> 0), hence
     # tan(i_E) = B_half Cm |a'(1)| / (c_bow L). With c_bow in C_BOW_RANGE the reachable angle goes from
     # i_lo (maximum c_bow) to i_hi (minimum c_bow); entrance_angle selects the position within the interval
@@ -329,7 +343,7 @@ def _form_core(p, cp, lcb):
     xf = xm + 0.5 * l_pmb
     h = 1e-5
     da = (_sac_eval(np.array(1.0 - h), xm - 0.5 * l_pmb, xf, a_T, (cp_aft - a_T) / (1.0 - a_T), cp_fwd,
-                    p['bow_convexity']) / h).item()
+                    bow_lambda(p)) / h).item()
     B_half = dimensions(p)[0]
     k_e = B_half * p['Cm'] * da / p['L']
     i_lo = math.atan(k_e / C_BOW_RANGE[1])
@@ -363,7 +377,7 @@ def form_data(p):
       see _run_deficit (keel_rise_short), beta_aft = ln(t_T / T) / ln(rho_T);
     - x_max and branch prismatics Cp_aft, Cp_fwd from Cp, LCB and bow_fullness (_sac_layout);
     - implicit bulb (bulb_implicit = w): Cp and LCB of the bare hull are reduced by the volume
-      (and moment) added by bulb, skeg and stem blend, multiplied by w,
+      (and moment) added by bulb and stem blend, multiplied by w,
       so that with w = 1 the complete hull has exactly the prescribed Cp and LCB;
     - bulb half-breadth b_bulb calibrated so that the maximum breadth of the section
       at the FP below H_B is B_B = C_BB B_MS; if the hull at the FP is already almost as wide as
@@ -413,13 +427,13 @@ def form_data(p):
 def sectional_area(p, xi, fd=None):
     """
     Normalised sectional area curve a(xi) = A(x) / A_M, xi = x / L (0 transom, 1 FP),
-    of the bare hull only (without bulb, skeg or stem blend):
+    of the bare hull only (without bulb or stem blend):
     run branch a = a_T + (1 - a_T) f((xa - xi) / xa) (convex, mean F_aft), parallel
     middle body a = 1 in [xa, xf] (L_pmb), forebody branch a = f((xi - xf) / (1 - xf)) with mean
     Cp_fwd and convexity bow_convexity. The means give exactly Cp_bare and LCB_bare.
     """
     fd = form_data(p) if fd is None else fd
-    return _sac_eval(xi, fd['xa'], fd['xf'], fd['a_T'], fd['F_aft'], fd['Cp_fwd'], p['bow_convexity'])
+    return _sac_eval(xi, fd['xa'], fd['xf'], fd['a_T'], fd['F_aft'], fd['Cp_fwd'], bow_lambda(p))
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +646,7 @@ def _hull_surface(p, u_orig, v, fd=None):
     """
     Analytic surface of the half-hull (starboard side, y >= 0).
     u_orig: 0 = Transom, 1 = Bow extremity (bulb nose at the bulb heights); v: 0 = Keel
-    (skeg bottom where present), 1 = Deck.
+    1 = Deck.
     Vertical reference: z = 0 horizontal keel, design waterline at z = H_dwl.
     Longitudinal reference: x = 0 transom at the waterline, x = L forward perpendicular
     (intersection of the stem with the design waterline).
@@ -657,11 +671,10 @@ def _hull_surface(p, u_orig, v, fd=None):
     B_B, L_PR, Z_B, H_B = bulb_dimensions(p)
     Cm, xa, xf = p['Cm'], fd['xa'], fd['xf']
     q_mid, q_aft = p['bilge_softness'], p['bilge_softness_aft']
-    skeg_on = _smootherstep(p['skeg_depth'] / 0.2)
     R0 = -math.log(fd['rho_T'])
 
     def _base(u):
-        """Bare hull with skeg and flare, before stem and bulb: (x, z, y)."""
+        """Bare hull with flare, before stem and bulb: (x, z, y)."""
         x = u * L
         a = sectional_area(p, u, fd)
         c = np.where(u >= xa, fd['c_bow'] + (Cm - fd['c_bow']) * a,
@@ -672,18 +685,13 @@ def _hull_surface(p, u_orig, v, fd=None):
         t = H_dwl * np.exp(-D)
         b = B_half * rho * np.exp(D)
         keel_z = H_dwl - t
-        q = np.where(u < xa, q_mid + (q_aft - q_mid) * (1.0 - _smootherstep(u / xa)), q_mid)
-
-        # Skeg: the bottom (v = 0) drops from the hull keel towards z = 0 by a fraction
-        # skeg_depth of the rise, from skeg_aft_end to where the keel becomes horizontal;
-        # fin of half-thickness w_f with rounded bottom, merged with the hull (4-norm)
-        w_s = _smootherstep((u - p['skeg_aft_end']) / SKEG_FADE_FRAC)
-        z_bot = keel_z * (1.0 - p['skeg_depth'] * w_s)
-        w_f = (p['skeg_thick_over_B'] * B_half * skeg_on * w_s
-               * _smootherstep(keel_z / (0.05 * H_dwl)))       # fin only where the keel is raised
+        # bilge exponent: bilge_softness_aft at the transom, bilge_softness on the parallel body,
+        # softening to Q_BOW at the stem (no knuckle line on the V-shaped forward sections)
+        q = np.where(u < xa, q_mid + (q_aft - q_mid) * (1.0 - _smootherstep(u / xa)),
+                     q_mid + (Q_BOW - q_mid) * _smootherstep((u - xf) / (1.0 - xf)))
 
         deck_z = _deck_z(p, u)
-        z = z_bot + (deck_z - z_bot) * v
+        z = keel_z + (deck_z - keel_z) * v
         # above the waterline the section blends (C2) into the vertical side y = b over the first
         # TOPSIDE_BLEND of the freeboard: the topside shape depends only on the flare and
         # follows the waterline (monotonic aft), not on the continuation of the section family
@@ -700,9 +708,6 @@ def _hull_surface(p, u_orig, v, fd=None):
         h_b = h_aft + (h_full - h_aft) * w_run
         w_top = _smootherstep((z - H_dwl) / h_b)
         y = b * ((1.0 - w_top) * eta + w_top)
-        s_f = np.clip((z - z_bot) / np.maximum(w_f, 1e-12), 0.0, 1.0)
-        y_f = w_f * np.sqrt(1.0 - (1.0 - s_f)**4)
-        y = (y**4 + y_f**4)**0.25
 
         # Topside flare (zero below the waterline): forward flare, zero at the stem
         # (sqrt(b)) and aft of the parallel middle body; aft/midship flare (negative = tumblehome),
@@ -715,17 +720,18 @@ def _hull_surface(p, u_orig, v, fd=None):
 
     x, z, y = _base(u_orig)
 
-    # Rounded stem with radius derived from the hull thickness: at each height
-    # r = hull half-breadth at distance l = stem_blend_over_L * L from the stem, hence
-    # a full bow has a larger radius than a fine bow and the blend extends over ~l.
-    # y^2 = y_hull^2 + r^2 (1 - e^(-2d/r)) e^(-(y_hull/r)^2): near the extremity y^2 ~ 2 r d
-    # (circle of radius r, normal to the centreplane); the contribution fades out when the
-    # hull reaches breadth r, so y stays monotonic (no bulge or waist)
-    stem_blend = p['stem_blend_over_L'] * L
-    r = np.maximum(_base(np.full_like(u_orig, 1.0 - stem_blend / L, dtype=float))[2], 1e-9)
+    # Rounded stem of radius r = stem_radius_over_L L:
+    # y^2 = y_hull^2 + 2 r l (1 - e^(-d/l)) w(d), d distance from the stem, l = STEM_ROUND_LEN L.
+    # Near the stem y^2 ~ y_hull^2 + 2 r d: with a straight entrance y_hull = d tan(i_E) this is a
+    # hyperbola, i.e. a circle of radius r at the stem that converges to the entrance line without
+    # crossing it, so the waterline stays straight with a rounded nose (no swelling of the nose,
+    # no S shape). w(d) fades the term out between 2 l and 5 l, where the hull is already much
+    # wider than the rounding, so the rest of the hull is unchanged.
+    r_stem = p['stem_radius_over_L'] * L
+    l_round = STEM_ROUND_LEN * L
     d_bow = (1.0 - u_orig) * L
-    nose_sq = r * r * (1.0 - np.exp(-2.0 * d_bow / r)) * np.exp(-(y / r)**2)
-    y = np.sqrt(y * y + nose_sq)
+    w_round = 1.0 - _smootherstep((d_bow - 2.0 * l_round) / (3.0 * l_round))
+    y = np.sqrt(y * y + 2.0 * r_stem * l_round * (1.0 - np.exp(-d_bow / l_round)) * w_round)
 
     # Bulbous bow (Kracht 1978) and stem. Side profile: the bow at height z is
     # x_bow(z) = L + (1 - S) R(z) + L_PR S, with S the normalised bulb shape (nose at
@@ -746,12 +752,25 @@ def _hull_surface(p, u_orig, v, fd=None):
     # (Lambda^2 = 1 - (1 - d / L_PR)^3, y^2 ~ d at the nose), blend over bulb_fair_over_L L
     l_fair = p['bulb_fair_over_L'] * L
     bend = _smootherstep((1.0 - u_orig) * L / (L_PR + l_fair))
-    S_b = _bulb_section(z, H_B, Z_B * (1.0 - p['bulb_rise'] * bend) / H_B)
+    # neck fill: aft of the FP, over the fairing length, the top of the bulb section rises from
+    # H_B towards BULB_FILL_TOP T while the bulb amplitude fades, so the bulb merges into the hull
+    # as a broad, low bulge instead of a lobe with a groove above it (unchanged at the FP)
+    # (only the breadth uses the filled shape S_b; the forward stretch of the waterlines uses the
+    # original shape S_x, so the surface cannot fold where the fill changes quickly along the hull)
+    fill = _smootherstep(((1.0 - u_orig) * L - L_PR) / l_fair)
+    H_top = H_B + (max(BULB_FILL_TOP * H_dwl, H_B) - H_B) * fill
+    z_m = Z_B * (1.0 - p['bulb_rise'] * bend)
+    S_b = _bulb_section(z, H_top, z_m / H_top)
+    S_x = _bulb_section(z, H_B, z_m / H_B)
     h_f = p['F_bow_over_L'] * L
     s_st = (z - H_dwl) / h_f
     s_p = np.clip(s_st, 0.0, 1.0)
-    stem = np.tan(np.radians(p['stem_rake'])) * h_f * (s_st + p['stem_curvature'] * s_p**3 * (1.0 - s_p)**2 / 0.03456)
-    x_bow = L + (1.0 - S_b) * stem + L_PR * S_b
+    # below the waterline the rake fades out (C2 at the waterline) over STEM_FADE_DEPTH of the
+    # draft: the stem is vertical where it meets the bulb, without a notch above it
+    s_dn = STEM_FADE_DEPTH * H_dwl / h_f
+    s_lin = np.where(s_st < 0.0, s_st * (1.0 - _smootherstep(-s_st / s_dn)), s_st)
+    stem = np.tan(np.radians(p['stem_rake'])) * h_f * (s_lin + p['stem_curvature'] * s_p**3 * (1.0 - s_p)**2 / 0.03456)
+    x_bow = L + (1.0 - S_x) * stem + L_PR * S_x
     g_b = _smootherstep((u_orig - (1.0 - BULB_STRETCH_FRAC)) / BULB_STRETCH_FRAC)
     x = x + g_b * (x_bow - L)
     d_nose = np.maximum(x_bow - x, 0.0)
@@ -861,6 +880,13 @@ def generate_hybrid_hull_control_net(num_u=32, num_v=15, params_file="hull_param
     # 2. Common longitudinal distribution
     s_u = _node_cdf(dense_net, turn_weight=0.5, max_ratio=3.0,
                     sigma=0.004 * n_dense_u, combine=True)[:, 0]
+    # a share BULB_NODE_FRAC of the nodes is spread evenly over the bulb and its fairing
+    # (last L_PR + bulb_fair_over_L L of the hull, measured on the keel line), so the bulb is
+    # not faceted on coarse grids; the blend of the two distributions keeps it smooth
+    _, L_PR, _, _ = bulb_dimensions(p)
+    u_b0 = max(0.5, 1.0 - (L_PR + p['bulb_fair_over_L'] * p['L']) / p['L'])
+    s_b = np.clip((u_dense - u_b0) / (1.0 - u_b0), 0.0, 1.0)
+    s_u = (1.0 - BULB_NODE_FRAC) * s_u + BULB_NODE_FRAC * s_b
     u_nodes = np.interp(np.linspace(0.0, 1.0, num_u), s_u, u_dense)
 
     # 3. Vertical distribution per section, filtered along the hull
@@ -1002,7 +1028,7 @@ def compute_hydrostatics(p, n_u=1200, n_v=600, wl=None):
         "B": 2.0 * B_half,
         "L_over_B": L / (2.0 * B_half),
         "B_over_T": 2.0 * B_half / T,
-        # Form coefficients of the generated hull (bulb, skeg and stem included)
+        # Form coefficients of the generated hull (bulb and stem included)
         "Cp": volume / max(a_ms * L, 1e-15),
         "Cm": a_ms / max(2.0 * b_wl.max() * t_max, 1e-15),
         "Cwp": awp / max(L * 2.0 * b_wl.max(), 1e-15),
@@ -1080,7 +1106,6 @@ def feasibility_checks(p, hydro=None, n_u=500, n_v=160):
         "chk_wl_beam": float(ywl[xs < 0.9 * p['L']].max() <= B_half * 1.001),
         "chk_section_height": float(np.min(Z[:, -1] - Z[:, 0]) >= 0.25 * T),
         "chk_bulb_below_wl": float(H_B <= BULB_TOP_MAX * T + 1e-9),
-        "chk_skeg_above_base": float(Z[:, 0].min() >= -1e-9),
         "chk_C_BB": float(abs(hydro['B_B'] - form_data(p)['B_B_target']) <= 0.01 * 2.0 * B_half),
         "chk_volume_closure": float(abs(hydro['volume_check_z'] / hydro['volume'] - 1.0) < 2e-3),
         "chk_stern_wl_monotone": float(_stern_monotone(p)),
