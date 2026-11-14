@@ -716,9 +716,9 @@ def _hull_surface(p, u_orig, v, fd=None):
         fwd_w = _onset((u - xf) / (1.0 - xf))
         y = y + p['flare_over_L'] * L * np.sqrt(b / B_half) * fwd_w * above
         y = y + p['flare_aft_over_L'] * L * (1.0 - _smootherstep((u - xf) / (1.0 - xf))) * above
-        return x, z, np.maximum(y, 0.0)
+        return x, z, np.maximum(y, 0.0), b
 
-    x, z, y = _base(u_orig)
+    x, z, y, b_wl = _base(u_orig)
 
     # Rounded stem of radius r = stem_radius_over_L L:
     # y^2 = y_hull^2 + 2 r l (1 - e^(-d/l)) w(d), d distance from the stem, l = STEM_ROUND_LEN L.
@@ -727,11 +727,15 @@ def _hull_surface(p, u_orig, v, fd=None):
     # crossing it, so the waterline stays straight with a rounded nose (no swelling of the nose,
     # no S shape). w(d) fades the term out between 2 l and 5 l, where the hull is already much
     # wider than the rounding, so the rest of the hull is unchanged.
+    # The term is scaled by the section shape y_hull / b (0 at the keel, 1 at the waterline): the
+    # nose radius goes to zero with the local entrance slope, so the keel line stays sharp
+    # (without it the keel would become a flat strip of half-width ~ sqrt(2 r l) near the bow).
     r_stem = p['stem_radius_over_L'] * L
     l_round = STEM_ROUND_LEN * L
-    d_bow = (1.0 - u_orig) * L
+    d_bow = np.maximum((1.0 - u_orig) * L, 0.0)
     w_round = 1.0 - _smootherstep((d_bow - 2.0 * l_round) / (3.0 * l_round))
-    y = np.sqrt(y * y + 2.0 * r_stem * l_round * (1.0 - np.exp(-d_bow / l_round)) * w_round)
+    w_sec = np.clip(y / np.maximum(b_wl, 1e-12), 0.0, 1.0)
+    y = np.sqrt(y * y + 2.0 * r_stem * l_round * (1.0 - np.exp(-d_bow / l_round)) * w_round * w_sec)
 
     # Bulbous bow (Kracht 1978) and stem. Side profile: the bow at height z is
     # x_bow(z) = L + (1 - S) R(z) + L_PR S, with S the normalised bulb shape (nose at
