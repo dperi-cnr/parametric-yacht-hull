@@ -62,9 +62,9 @@ def beam_window(p, bt):
 def dimensions(p):
     """
     Absolute dimensions [m]. The displaced volume (complete hull: bulb, skeg and stem included)
-    is given: B T = kappa volume / (Cp Cm L), with kappa = 1 if the bulb volume is compensated
-    (bulb_implicit = 1), otherwise found by iteration (_bt_correction) so that the volume of the
-    complete hull is exact. B is chosen by beam_rel within beam_window (realistic L / B and
+    is given: B T = kappa volume / (Cp Cm L), with kappa found by iteration (_bt_correction) so
+    that the volume of the complete hull is exact (kappa = 1 with the compensated bulb, except in
+    extreme corners). B is chosen by beam_rel within beam_window (realistic L / B and
     B / T), T = B T / B (draft of the horizontal keel), H_deck = T + F_over_L L (deck at the
     transom). Returns (B_half, T, H_deck).
     """
@@ -82,23 +82,23 @@ _BT_CACHE = {}
 
 def _bt_correction(p):
     """
-    Factor kappa on the product B T so that the complete hull has the given volume: with the
-    implicit bulb (bulb_implicit = 1) the volume is exact by construction (kappa = 1); otherwise
-    bulb, skeg and stem add volume and kappa is corrected by fixed-point iteration (volume ~ kappa).
+    Factor kappa on the product B T so that the complete hull has the given volume, corrected by
+    fixed-point iteration (volume ~ kappa). With the implicit bulb (bulb_implicit = 1) kappa = 1
+    already holds unless the compensated bare hull is not reachable (extreme corners, see
+    _sac_layout); with an additive bulb, bulb, skeg and stem add volume.
     """
     key = tuple(float(p[n]) for n in ALL_NAMES)
     if key in _BT_CACHE:
         return _BT_CACHE[key]
     kappa = 1.0
-    if p['bulb_implicit'] < 1.0:
-        for _ in range(8):
-            pk = dict(p, _bt_corr=kappa)
-            vol = _volume_moment(pk, form_data(pk))[0]
-            k_new = kappa * p['volume'] / vol
-            done = abs(k_new - kappa) < 1e-6
-            kappa = k_new
-            if done:
-                break
+    for _ in range(8):
+        pk = dict(p, _bt_corr=kappa)
+        vol = _volume_moment(pk, form_data(pk))[0]
+        k_new = kappa * p['volume'] / vol
+        done = abs(k_new - kappa) < 1e-6
+        kappa = k_new
+        if done:
+            break
     if len(_BT_CACHE) > 64:
         _BT_CACHE.clear()
     _BT_CACHE[key] = kappa
