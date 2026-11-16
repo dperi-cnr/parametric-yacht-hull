@@ -28,6 +28,7 @@ BULB_STRETCH_FRAC = 0.25     # forward stretch (fraction of L) over which the bu
 BULB_MIN_AMP = 0.30          # minimum bulb amplitude / B_B / 2 (bulb always visible even if the hull at the FP is already wide)
 BULB_TOP_MAX = 0.95          # bulb top H_B at most at this fraction of the draft (bulb always submerged)
 BULB_ZM_RANGE = (0.35, 0.70)  # range of Z_B / H_B spanned by bulb_type in [0, 1] (Delta -> Nabla)
+BULB_BOTTOM_R = 1.0          # largest radius of the bulb bottom at the keel / bulb half-breadth (no flat-bottomed bulbs)
 TRANSOM_BLEND_FRAC = 0.08    # aft stretch (fraction of L) over which the transom rake is blended
 BULB_FILL_TOP = 0.95         # aft of the FP the bulb top rises towards this fraction of the draft (fills the neck)
 BULB_NODE_FRAC = 0.15        # share of the longitudinal grid nodes reserved for the bulb and its fairing
@@ -603,10 +604,16 @@ def bulb_dimensions(p):
     bulb section), with zm = Z_B / H_B ranging from zm_lo (bulb_type = 0, Delta type) to
     zm_hi (bulb_type = 1, Nabla type) and zm_lo >= Z_B / (BULB_TOP_MAX T): the top of the
     bulb always stays below the waterline.
+    Round bottom: near the keel S^2 ~ z / (k F_max H_B) (see _bulb_section), so the radius of
+    the bulb bottom is R = b^2 (1 - zm) / (12 F_max Z_B), b = B_B / 2; zm_lo is also raised so that
+    R <= BULB_BOTTOM_R b (wide bulbs with a low maximum breadth would otherwise sit on a flat base).
     """
     B_half, H_dwl, _ = dimensions(p)
     Z_B = p['C_ZB'] * H_dwl
-    zm_lo = max(BULB_ZM_RANGE[0], Z_B / (BULB_TOP_MAX * H_dwl))
+    b_half = p['C_BB'] * B_half
+    f_max = (1.0 / 7.0) * (6.0 / 7.0)**6
+    zm_lo = max(BULB_ZM_RANGE[0], Z_B / (BULB_TOP_MAX * H_dwl),
+                1.0 - 12.0 * f_max * BULB_BOTTOM_R * Z_B / b_half)
     zm_hi = max(BULB_ZM_RANGE[1], zm_lo)
     zm = zm_lo + p['bulb_type'] * (zm_hi - zm_lo)
     return p['C_BB'] * 2.0 * B_half, p['C_LPR'] * p['L'], Z_B, Z_B / zm
@@ -624,8 +631,17 @@ def _run_deficit(R, R0, beta, lam):
     (keel rising over the whole run), lam = 1 a smooth step at r_s =
     (1 - beta) R0: constant breadth (= transom) aft, horizontal keel forward.
     In both cases D(R0) = beta R0, i.e. the transom immersion is exact.
+    With a wide transom the breadth deficit r_s is small and the step would squeeze the narrowing
+    of the waterlines into a short S near the parallel body: when 2 r_s < R0 / 2 the breadth share
+    is spread over R in [0, R_e], R_e = R0 / 2, with amplitude A = 2 r_s / R_e < 1,
+    1 - sigma = A (1 - smootherstep(R / R_e)) (identical to the step at 2 r_s = R0 / 2).
     """
     r_s = (1.0 - beta) * R0
+    R_e = 0.5 * R0
+    if 2.0 * r_s < R_e:
+        t = np.clip(R / R_e, 0.0, 1.0)
+        D1 = R - 2.0 * r_s * (t - t**6 + 3.0 * t**5 - 2.5 * t**4)   # A R_e int (1 - smootherstep)
+        return (1.0 - lam) * beta * R + lam * D1
     w = max(min(0.5 * R0, 2.0 * r_s, 2.0 * (R0 - r_s)), 1e-9)
     x = (R - r_s) / w + 0.5
     xc = np.clip(x, 0.0, 1.0)
@@ -692,22 +708,25 @@ def _hull_surface(p, u_orig, v, fd=None):
 
         deck_z = _deck_z(p, u)
         z = keel_z + (deck_z - keel_z) * v
-        # above the waterline the section blends (C2) into the vertical side y = b over the first
-        # TOPSIDE_BLEND of the freeboard: the topside shape depends only on the flare and
-        # follows the waterline (monotonic aft), not on the continuation of the section family
-        # In the run the blend height is limited to 0.086 t / eta'(1), eta'(1) = k^-q
-        # (section slope at the waterline): the outward overhang stays below ~3% of b
+        # Above the waterline the section family is continued in a compressed height
+        # zeta_e = 1 + (h_b / t) I(s), s = (z - H_dwl) / h_b, I' = 1 - smootherstep(s), over the first
+        # TOPSIDE_BLEND of the freeboard: the section keeps its slope and curvature at the waterline
+        # (C2) and turns monotonically into a vertical side at b eta(1 + h_b / 2t), with no outward
+        # hump above the waterline (the topside then depends only on the flare terms).
+        # In the run the blend height is limited to 0.043 t / eta'(1), eta'(1) = k^-q
+        # (section slope at the waterline): the topside stays within ~2% of b outside the waterline
         # even for low, flat sections (transom), where the blend becomes a rounded edge;
         # towards the parallel middle body the limit fades out (regularised minimum, C2 blend in u).
         k_s = section_k(c, q)
-        eta = _section_eta((z - keel_z) / np.maximum(t, 1e-12), k_s, q)
         h_full = TOPSIDE_BLEND * np.maximum(deck_z - H_dwl, 1e-12)
-        h_cap = 0.086 * t / np.maximum(k_s**(-q), 1e-12)
+        h_cap = 0.043 * t / np.maximum(k_s**(-q), 1e-12)
         h_aft = (h_full**-6 + h_cap**-6)**(-1.0 / 6.0)
         w_run = _smootherstep((u - 0.7 * xa) / (0.3 * xa))
         h_b = h_aft + (h_full - h_aft) * w_run
-        w_top = _smootherstep((z - H_dwl) / h_b)
-        y = b * ((1.0 - w_top) * eta + w_top)
+        s_t = np.clip((z - H_dwl) / h_b, 0.0, 1.0)
+        zeta = np.where(z > H_dwl, 1.0 + h_b / np.maximum(t, 1e-12) * (s_t - s_t**6 + 3.0 * s_t**5 - 2.5 * s_t**4),
+                        (z - keel_z) / np.maximum(t, 1e-12))
+        y = b * _section_eta(zeta, k_s, q)
 
         # Topside flare (zero below the waterline): forward flare, zero at the stem
         # (sqrt(b)) and aft of the parallel middle body; aft/midship flare (negative = tumblehome),
@@ -765,7 +784,15 @@ def _hull_surface(p, u_orig, v, fd=None):
     H_top = H_B + (max(BULB_FILL_TOP * H_dwl, H_B) - H_B) * fill
     z_m = Z_B * (1.0 - p['bulb_rise'] * bend)
     S_b = _bulb_section(z, H_top, z_m / H_top)
-    S_x = _bulb_section(z, H_B, z_m / H_B)
+    # side profile used to stretch the waterlines: Kracht's shape up to the nose height, then its
+    # upper flank is blended (between z_m and H_B) into the gentle decay (1 - s^2)^3,
+    # s = (z - z_m) / (H_fill - z_m), which closes at H_fill (C2): the bulb top fairs into the stem
+    # with a long concave fillet, instead of ending at H_B with a step that the stretch would carry
+    # aft as a crease along the forebody
+    H_fill = max(BULB_FILL_TOP * H_dwl, H_B)
+    w_up = _smootherstep((z - z_m) / np.maximum(H_B - z_m, 1e-12))
+    s_up = np.clip((z - z_m) / np.maximum(H_fill - z_m, 1e-12), 0.0, 1.0)
+    S_x = (1.0 - w_up) * _bulb_section(z, H_B, z_m / H_B) + w_up * (1.0 - s_up**2)**3
     h_f = p['F_bow_over_L'] * L
     s_st = (z - H_dwl) / h_f
     s_p = np.clip(s_st, 0.0, 1.0)
