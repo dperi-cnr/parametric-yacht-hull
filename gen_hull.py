@@ -156,27 +156,35 @@ def _hollow(t, P):
     return (1.0 - t**3)**c
 
 
-def _phi(t, e):
-    """Normalised convex ramp ((t^4 + e^4)^(1/4) - e) / ((1 + e^4)^(1/4) - e): phi'(0) = phi''(0) = 0."""
-    return ((t**4 + e**4)**0.25 - e) / ((1.0 + e**4)**0.25 - e)
+def _phi(t, m):
+    """
+    Normalised convex ramp with curvature density phi'' ~ t (1 - t)^m: phi(0) = phi'(0) = phi''(0) = 0
+    (C2 with the parallel middle body), phi(1) = 1; the curvature is spread over the whole branch
+    (peak at t = 1 / (m + 1)) instead of being concentrated in a short shoulder.
+    m = 0 gives t^3; m -> inf the straight ramp.
+    """
+    w = 1.0 - t
+    return ((m + 2.0) * (m + 3.0) * t / ((m + 1.0) * (m + 2.0))
+            + (m + 3.0) * (w**(m + 2.0) - 1.0) / (m + 1.0)
+            - (w**(m + 3.0) - 1.0))
 
 
 @lru_cache(maxsize=1)
 def _convex_table():
-    """Table ln(e) -> mean of 1 - phi(t, e), monotonically increasing from 0.5 (e -> 0) to 0.8 (e -> inf)."""
-    le = np.linspace(math.log(1e-4), math.log(1e3), 600)
+    """Table ln(m) -> mean of 1 - phi(t, m), monotonically decreasing from 0.75 (m -> 0) to 0.5 (m -> inf)."""
+    lm = np.linspace(math.log(1e-4), math.log(1e5), 800)
     t = np.linspace(0.0, 1.0, 4001)
-    mean = np.array([1.0 - np.trapezoid(_phi(t, math.exp(x)), t) for x in le])
-    return le, mean
+    mean = np.array([1.0 - np.trapezoid(_phi(t, math.exp(x)), t) for x in lm])
+    return lm[::-1], mean[::-1]
 
 
 def _convex(t, P):
-    """Convex branch with mean P (P >= 0.8: 1 - t^n as in the S-shaped family)."""
-    if P >= 0.8:
+    """Convex branch with mean P (P >= 0.75: 1 - t^n, n = P / (1 - P), equal to 1 - t^3 at P = 0.75)."""
+    if P >= 0.75:
         return 1.0 - t**(P / (1.0 - P))
-    le, mean = _convex_table()
-    e = math.exp(np.interp(max(P, CONVEX_MIN_P + 1e-4), mean, le))
-    return 1.0 - _phi(t, e)
+    lm, mean = _convex_table()
+    m = math.exp(np.interp(max(P, CONVEX_MIN_P + 1e-4), mean, lm))
+    return 1.0 - _phi(t, m)
 
 
 def _branch(t, P, lam):
@@ -557,6 +565,25 @@ def _bulb_section(z, H_B, zb_over_hb):
     return np.sqrt(zeta * (1.0 - zeta)**6 / f_max)
 
 
+def _bulb_shape(z, z_m, H_k, H_close):
+    """
+    Bulb shape: Kracht's S(z) (_bulb_section, height H_k, maximum at z_m) below z_m; above z_m a
+    single tail T(s) = (1 + al s^2)(1 - s^2)^3, s = (z - z_m) / (H_close - z_m), which closes at
+    H_close with zero value, slope and curvature. al = 3 - c D^2 (D = H_close - z_m, c = -S''/2 of
+    Kracht's shape at its maximum, c = 0.2143 H_k^2 / (z_m^2 (H_k - z_m)^2)) matches the curvature at
+    z_m, so the shape is C2 there too; al is kept in (-0.9, 3], where T decreases monotonically.
+    Kracht's own upper flank closes in the last few per cent of the height for O and Nabla bulbs,
+    which leaves a crease where the bulb top meets the hull.
+    """
+    zm = np.clip(z_m / H_k, 0.05, 0.95)
+    D = np.maximum(H_close - z_m, 1e-12)
+    c = 0.2143 / (zm * (1.0 - zm) * H_k)**2
+    al = np.clip(3.0 - c * D * D, -0.9, 3.0)
+    s = np.clip((z - z_m) / D, 0.0, 1.0)
+    tail = (1.0 + al * s * s) * (1.0 - s * s)**3
+    return np.where(z <= z_m, _bulb_section(z, H_k, zm), tail)
+
+
 def _smooth_rows(a, sigma):
     """Gaussian filter along axis 0 (edges replicated); preserves monotonicity along axis 1."""
     if sigma <= 0.0:
@@ -783,23 +810,22 @@ def _hull_surface(p, u_orig, v, fd=None):
     fill = _smootherstep(((1.0 - u_orig) * L - L_PR) / l_fair)
     H_top = H_B + (max(BULB_FILL_TOP * H_dwl, H_B) - H_B) * fill
     z_m = Z_B * (1.0 - p['bulb_rise'] * bend)
-    S_b = _bulb_section(z, H_top, z_m / H_top)
-    # side profile used to stretch the waterlines: Kracht's shape up to the nose height, then its
-    # upper flank is blended (between z_m and H_B) into the gentle decay (1 - s^2)^3,
-    # s = (z - z_m) / (H_fill - z_m), which closes at H_fill (C2): the bulb top fairs into the stem
-    # with a long concave fillet, instead of ending at H_B with a step that the stretch would carry
-    # aft as a crease along the forebody
+    # Upper flanks (see _bulb_shape): breadth closing at H_top, side profile used to stretch the
+    # waterlines closing at H_fill ~ 0.95 T, so the bulb top fairs into the stem with a long concave
+    # fillet instead of ending at H_B with a step that the stretch would carry aft as a crease
+    S_b = _bulb_shape(z, z_m, H_top, H_top)
     H_fill = max(BULB_FILL_TOP * H_dwl, H_B)
-    w_up = _smootherstep((z - z_m) / np.maximum(H_B - z_m, 1e-12))
-    s_up = np.clip((z - z_m) / np.maximum(H_fill - z_m, 1e-12), 0.0, 1.0)
-    S_x = (1.0 - w_up) * _bulb_section(z, H_B, z_m / H_B) + w_up * (1.0 - s_up**2)**3
+    S_x = _bulb_shape(z, z_m, H_B, H_fill)
     h_f = p['F_bow_over_L'] * L
     s_st = (z - H_dwl) / h_f
     s_p = np.clip(s_st, 0.0, 1.0)
     # below the waterline the rake fades out (C2 at the waterline) over STEM_FADE_DEPTH of the
-    # draft: the stem is vertical where it meets the bulb, without a notch above it
+    # draft, so the stem is vertical where it meets the bulb. The slope fades, not the offset:
+    # s_lin = -s_dn I(-s / s_dn), I' = 1 - smootherstep, so the stem turns monotonically to vertical
+    # half a fade depth aft of the FP, without coming forward again (no notch above the bulb)
     s_dn = STEM_FADE_DEPTH * H_dwl / h_f
-    s_lin = np.where(s_st < 0.0, s_st * (1.0 - _smootherstep(-s_st / s_dn)), s_st)
+    t_dn = np.clip(-s_st / s_dn, 0.0, 1.0)
+    s_lin = np.where(s_st < 0.0, -s_dn * (t_dn - t_dn**6 + 3.0 * t_dn**5 - 2.5 * t_dn**4), s_st)
     stem = np.tan(np.radians(p['stem_rake'])) * h_f * (s_lin + p['stem_curvature'] * s_p**3 * (1.0 - s_p)**2 / 0.03456)
     x_bow = L + (1.0 - S_x) * stem + L_PR * S_x
     g_b = _smootherstep((u_orig - (1.0 - BULB_STRETCH_FRAC)) / BULB_STRETCH_FRAC)
