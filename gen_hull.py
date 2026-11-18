@@ -84,6 +84,53 @@ def dimensions(p):
 _BT_CACHE = {}
 
 
+# Cache on disk of the derived quantities (kappa, form_data), shared between processes: a run of
+# update_params_siren.py followed by gen_hull.py with the same parameters solves them only once.
+# Keyed by a hash of this source file and the parameter values; at most _DISK_CACHE_MAX entries.
+_DISK_CACHE = None
+_DISK_CACHE_MAX = 32
+
+
+@lru_cache(maxsize=1)
+def _disk_cache_info():
+    import hashlib
+    with open(os.path.abspath(__file__), 'rb') as fh:
+        src = hashlib.sha1(fh.read()).hexdigest()[:16]
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), '__pycache__', 'gen_hull_form_cache.json'), src
+
+
+def _disk_get(kind, key):
+    global _DISK_CACHE
+    import json
+    path, src = _disk_cache_info()
+    if _DISK_CACHE is None:
+        try:
+            with open(path) as fh:
+                _DISK_CACHE = json.load(fh)
+        except Exception:
+            _DISK_CACHE = {}
+    return _DISK_CACHE.get(f'{kind}|{src}|{key!r}')
+
+
+def _disk_put(kind, key, value):
+    global _DISK_CACHE
+    import json
+    path, src = _disk_cache_info()
+    if _DISK_CACHE is None:
+        _disk_get(kind, key)
+    _DISK_CACHE[f'{kind}|{src}|{key!r}'] = value
+    while len(_DISK_CACHE) > _DISK_CACHE_MAX:
+        _DISK_CACHE.pop(next(iter(_DISK_CACHE)))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f'{path}.{os.getpid()}.tmp'
+        with open(tmp, 'w') as fh:
+            json.dump(_DISK_CACHE, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def _bt_correction(p):
     """
     Factor kappa on the product B T so that the complete hull has the given volume, corrected by
@@ -94,6 +141,10 @@ def _bt_correction(p):
     key = tuple(float(p[n]) for n in ALL_NAMES)
     if key in _BT_CACHE:
         return _BT_CACHE[key]
+    stored = _disk_get('kappa', key)
+    if stored is not None:
+        _BT_CACHE[key] = stored
+        return stored
     kappa = 1.0
     for _ in range(8):
         pk = dict(p, _bt_corr=kappa)
@@ -106,6 +157,7 @@ def _bt_correction(p):
     if len(_BT_CACHE) > 64:
         _BT_CACHE.clear()
     _BT_CACHE[key] = kappa
+    _disk_put('kappa', key, float(kappa))
     return kappa
 
 
@@ -140,11 +192,30 @@ def _hollow_coeffs(P):
         return ('pow', P / (1.0 - P))
     if P >= _M2:
         return ('mix', (0.75 - P) / (0.75 - _M2))
-    lo, hi = 2.0, 5000.0
-    for _ in range(100):
-        mid = 0.5 * (lo + hi)
-        lo, hi = (mid, hi) if _mean_pow3(mid) > P else (lo, mid)
-    return ('pow3', 0.5 * (lo + hi))
+    # mean of (1 - t^3)^m decreases with m: bracket in ln m from a table, then Illinois iteration
+    lm, mean = _pow3_table()
+    i = int(np.clip(np.searchsorted(-mean, -P), 1, lm.size - 1))
+    a, b = lm[i - 1], lm[i]
+    fa, fb = mean[i - 1] - P, mean[i] - P
+    x = a
+    for _ in range(60):
+        x = b - fb * (b - a) / (fb - fa)
+        fx = _mean_pow3(math.exp(x)) - P
+        if abs(fx) < 1e-15 or abs(b - a) < 1e-14:
+            break
+        if fx * fb < 0.0:
+            a, fa = b, fb
+        else:
+            fa *= 0.5
+        b, fb = x, fx
+    return ('pow3', math.exp(x))
+
+
+@lru_cache(maxsize=1)
+def _pow3_table():
+    """Table ln m -> mean of (1 - t^3)^m, m in [2, 5000] (decreasing)."""
+    lm = np.linspace(math.log(2.0), math.log(5000.0), 200)
+    return lm, np.array([_mean_pow3(math.exp(x)) for x in lm])
 
 
 def _hollow(t, P):
@@ -169,21 +240,14 @@ def _phi(t, m):
             - (w**(m + 3.0) - 1.0))
 
 
-@lru_cache(maxsize=1)
-def _convex_table():
-    """Table ln(m) -> mean of 1 - phi(t, m), monotonically decreasing from 0.75 (m -> 0) to 0.5 (m -> inf)."""
-    lm = np.linspace(math.log(1e-4), math.log(1e5), 800)
-    t = np.linspace(0.0, 1.0, 4001)
-    mean = np.array([1.0 - np.trapezoid(_phi(t, math.exp(x)), t) for x in lm])
-    return lm[::-1], mean[::-1]
-
-
 def _convex(t, P):
-    """Convex branch with mean P (P >= 0.75: 1 - t^n, n = P / (1 - P), equal to 1 - t^3 at P = 0.75)."""
+    """
+    Convex branch with mean P. The mean of 1 - phi_m is exactly 1/2 + 1/(m + 4), hence
+    m = 1 / (P - 1/2) - 4 (P in (1/2, 3/4]); P >= 0.75: 1 - t^n, n = P / (1 - P), equal to 1 - t^3 at P = 0.75.
+    """
     if P >= 0.75:
         return 1.0 - t**(P / (1.0 - P))
-    lm, mean = _convex_table()
-    m = math.exp(np.interp(max(P, CONVEX_MIN_P + 1e-4), mean, lm))
+    m = 1.0 / (max(P, CONVEX_MIN_P + 1e-4) - 0.5) - 4.0
     return 1.0 - _phi(t, m)
 
 
@@ -220,10 +284,27 @@ def _sac_eval(xi, xa, xf, a_T, F_aft, cp_fwd, lam_fwd):
     return np.where(xi < xa, aft, np.where(xi > xf, fwd, 1.0))
 
 
-def _sac_lcb(cp, pa, xa, xf, a_T, lam_fwd, xi=np.linspace(0.0, 1.0, 2001)):
+_GL_T, _GL_W = np.polynomial.legendre.leggauss(64)
+_GL_T, _GL_W = 0.5 * (_GL_T + 1.0), 0.5 * _GL_W     # Gauss-Legendre nodes and weights on [0, 1]
+
+
+def _branch_moment(P, lam):
+    """First moment int_0^1 t f(t) dt of the branch with mean P and convex weight lam (Gauss-Legendre)."""
+    return float(np.dot(_GL_W, _GL_T * _branch(_GL_T, P, lam)))
+
+
+def _sac_lcb(cp, pa, xa, xf, a_T, lam_fwd):
+    """
+    LCB (from L/2, fraction of L) of the layout: each branch has the exact area given by its mean, and
+    its first moment by Gauss-Legendre quadrature (the branches are smooth on [0, 1]).
+    """
     pf = (cp - (xf - xa) - xa * pa) / (1.0 - xf)
-    a = _sac_eval(xi, xa, xf, a_T, (pa - a_T) / (1.0 - a_T), pf, lam_fwd)
-    return np.trapezoid(a * xi, xi) / np.trapezoid(a, xi) - 0.5
+    F = (pa - a_T) / (1.0 - a_T)
+    area = xa * (a_T + (1.0 - a_T) * F) + (xf - xa) + (1.0 - xf) * pf
+    mom = (xa * xa * (0.5 * a_T + (1.0 - a_T) * (F - _branch_moment(F, 1.0)))
+           + 0.5 * (xf * xf - xa * xa)
+           + (1.0 - xf) * (xf * pf + (1.0 - xf) * _branch_moment(pf, lam_fwd)))
+    return mom / area - 0.5
 
 
 def _pa_of(cp, pf, xm, l):
@@ -398,6 +479,10 @@ def form_data(p):
     key = tuple(float(p[n]) for n in ALL_NAMES) + (float(p['_bt_corr']),)
     if key in _DERIVED_CACHE:
         return _DERIVED_CACHE[key]
+    stored = _disk_get('form', key)
+    if stored is not None:
+        _DERIVED_CACHE[key] = stored
+        return stored
     L = p['L']
     B_half, T, _ = dimensions(p)
     A_M = p['Cm'] * 2.0 * B_half * T
@@ -429,7 +514,9 @@ def form_data(p):
               B_B_target=2.0 * math.sqrt(y_hull_sq + b_bulb**2))
     if len(_DERIVED_CACHE) > 64:
         _DERIVED_CACHE.clear()
+    fd = {k: float(v) for k, v in fd.items()}
     _DERIVED_CACHE[key] = fd
+    _disk_put('form', key, fd)
     return fd
 
 
@@ -470,7 +557,32 @@ def _section_table():
     Table of ln(k - 1) over SECTION_Q_GRID x c in [0.501, 0.99]: for each q, c is computed on a
     fine grid of s = ln(k - 1) and inverted with a cubic spline (C2), then sampled on a
     regular, not too fine, grid of c, so that the bicubic spline does not reproduce noise.
+    The table (about 2 s) is cached on disk in __pycache__ next to this file, keyed by the source
+    of the functions that define it, so a new process reads it instead of recomputing it.
     """
+    import hashlib, inspect
+    key = hashlib.sha1((inspect.getsource(_section_eta) + inspect.getsource(_section_table_compute)
+                        + repr(SECTION_Q_GRID.tolist())).encode()).hexdigest()[:16]
+    cache = os.path.join(os.path.dirname(os.path.abspath(__file__)), '__pycache__',
+                         f'gen_hull_section_table_{key}.npz')
+    try:
+        with np.load(cache) as d:
+            return d['c_grid'], d['S']
+    except Exception:
+        pass
+    c_grid, S = _section_table_compute()
+    try:
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        tmp = cache + f'.{os.getpid()}.tmp.npz'
+        np.savez(tmp, c_grid=c_grid, S=S)
+        os.replace(tmp, cache)
+    except OSError:
+        pass
+    return c_grid, S
+
+
+def _section_table_compute():
+    """Computes the table of _section_table."""
     from scipy.interpolate import CubicSpline
     s_k = np.linspace(-9.0, 14.0, 500)
     k = 1.0 + np.exp(s_k)
@@ -846,16 +958,32 @@ def _hull_surface(p, u_orig, v, fd=None):
     return np.broadcast_arrays(x, y, z)
 
 
-def _fp_max_breadth(p, fd, n_u=500, n_v=240):
-    """Maximum breadth (both sides) of the section x = L below the bulb top H_B."""
+def _fp_max_breadth(p, fd, n_u=60, n_v=240):
+    """
+    Maximum breadth (both sides) of the section x = L below the bulb top H_B. For each line
+    v = const. the crossing x(u) = L (x increases with u) is bracketed on a coarse grid of u and
+    then found by regula falsi (Illinois) on all the lines at once.
+    """
     L = p['L']
     H_B = bulb_dimensions(p)[3]
     u = np.linspace(1.0 - BULB_STRETCH_FRAC - 0.05, 1.0, n_u)
     v = np.linspace(0.0, 1.0, n_v)
-    x, y, z = _hull_surface(p, u[:, None], v[None, :], fd)
-    y_fp = np.array([np.interp(L, x[:, j], y[:, j]) for j in range(n_v)])
-    z_fp = np.array([np.interp(L, x[:, j], z[:, j]) for j in range(n_v)])
-    m = z_fp <= H_B
+    x = _hull_surface(p, u[:, None], v[None, :], fd)[0]
+    reach = x[-1] > L                      # lines whose bow end lies forward of the FP
+    i = np.clip(np.argmax(x > L, axis=0), 1, n_u - 1)
+    a, b = u[i - 1], u[i]
+    fa, fb = x[i - 1, np.arange(n_v)] - L, x[i, np.arange(n_v)] - L
+    uu = a
+    for _ in range(30):
+        uu = b - fb * (b - a) / np.where(fb != fa, fb - fa, 1.0)
+        fx = _hull_surface(p, uu, v, fd)[0] - L
+        if np.max(np.abs(np.where(reach, fx, 0.0))) < 1e-9 * L:
+            break
+        swap = fx * fb < 0.0
+        a, fa = np.where(swap, b, a), np.where(swap, fb, 0.5 * fa)
+        b, fb = uu, fx
+    _, y_fp, z_fp = _hull_surface(p, uu, v, fd)
+    m = reach & (z_fp <= H_B)
     return 2.0 * y_fp[m].max() if m.any() else 0.0
 
 
@@ -1228,19 +1356,24 @@ def export_hydrostatics(filename, hydro):
 
 
 def export_plot3d_ascii(filename, control_net):
-    """Exports the grid in PLOT3D ASCII format for Fortran/CFD codes."""
+    """
+    Exports the grid in PLOT3D ASCII format for Fortran/CFD codes: number of blocks, then
+    ni nj nk, then all the coordinates on a single line, x, y, z in turn with i varying fastest,
+    as read by
+        read(22,*) nb
+        read(22,*) ni,nj,nk
+        read(22,*) ((x(i,j),i=1,ni),j=1,nj),((y(i,j),i=1,ni),j=1,nj),((z(i,j),i=1,ni),j=1,nj)
+    """
     grid_f = file_order(control_net)
     ni, nj, _ = grid_f.shape
     nk = 1
     nb = 1
-
+    # transpose to (coordinate, j, i): ravel then gives i fastest, then j, then the coordinate
+    vals = np.transpose(grid_f, (2, 1, 0)).ravel()
     with open(filename, 'w') as f:
         f.write(f"{nb}\n")
         f.write(f"{ni} {nj} {nk}\n")
-        for coord_idx in range(3):
-            for j in range(nj):
-                row_vals = [f"{grid_f[i, j, coord_idx]:16.8e}" for i in range(ni)]
-                f.write(" ".join(row_vals) + "\n")
+        f.write(" ".join(f"{v:16.8e}" for v in vals) + "\n")
 
     print(f"PLOT3D ASCII file saved successfully: {filename}")
 
@@ -1592,6 +1725,11 @@ if __name__ == "__main__":
     parser.add_argument("--step-half", action="store_true", help="STEP with the starboard side only (default: complete hull)")
     parser.add_argument("--step-open", action="store_true",
                         help="STEP with the hull surface only, without deck and transom closures (default: closed solid)")
+    parser.add_argument("--no-p3d", action="store_true", help="Do not write the PLOT3D file")
+    parser.add_argument("--no-nurbs", action="store_true", help="Do not write the NURBS degree/knots file")
+    parser.add_argument("--no-step", action="store_true", help="Do not write the STEP file")
+    parser.add_argument("--no-hydro", action="store_true",
+                        help="Do not compute and write the hydrostatics and validity checks")
 
     args = parser.parse_args()
 
@@ -1603,22 +1741,28 @@ if __name__ == "__main__":
     ctrl_f = net_f
     if args.nurbs_fit == "interp":
         ctrl_f = bspline_interpolate(net_f, args.degree, args.degree, knots_u, knots_v)
-    dev_max, dev_mean = nurbs_deviation(net_f, ctrl_f, args.degree, args.degree, knots_u, knots_v)
-    print(f"B-spline ({args.nurbs_fit}): deviation from the surface points max {dev_max:.3e} m, "
-          f"mean {dev_mean:.3e} m")
+    dev_max = dev_mean = None
+    if not (args.no_nurbs and args.no_hydro):
+        dev_max, dev_mean = nurbs_deviation(net_f, ctrl_f, args.degree, args.degree, knots_u, knots_v)
+        print(f"B-spline ({args.nurbs_fit}): deviation from the surface points max {dev_max:.3e} m, "
+              f"mean {dev_mean:.3e} m")
 
-    export_plot3d_ascii(args.output, file_order(ctrl_f))
-    export_nurbs_ascii(args.nurbs, ctrl_f, args.degree, args.degree, knots_u, knots_v)
-    export_step(args.step, ctrl_f, args.degree, args.degree, knots_u, knots_v, mirror=not args.step_half,
-                closed=not args.step_open)
+    if not args.no_p3d:
+        export_plot3d_ascii(args.output, file_order(ctrl_f))
+    if not args.no_nurbs:
+        export_nurbs_ascii(args.nurbs, ctrl_f, args.degree, args.degree, knots_u, knots_v)
+    if not args.no_step:
+        export_step(args.step, ctrl_f, args.degree, args.degree, knots_u, knots_v, mirror=not args.step_half,
+                    closed=not args.step_open)
 
-    hydro = compute_hydrostatics(params)
-    hydro.update(feasibility_checks(params, hydro))
-    hydro["nurbs_dev_max"], hydro["nurbs_dev_mean"] = dev_max, dev_mean
-    export_hydrostatics(args.hydro, hydro)
-    print(f"Volume {hydro['volume']:.3f} m^3, LCB {hydro['LCB']:.3f} m from the transom, "
-          f"S_wet {hydro['S_wet']:.2f} m^2, LWL {hydro['LWL']:.2f} m, "
-          f"variant {'VALID' if hydro['feasible'] == 1.0 else 'NOT VALID'}")
+    if not args.no_hydro:
+        hydro = compute_hydrostatics(params)
+        hydro.update(feasibility_checks(params, hydro))
+        hydro["nurbs_dev_max"], hydro["nurbs_dev_mean"] = dev_max, dev_mean
+        export_hydrostatics(args.hydro, hydro)
+        print(f"Volume {hydro['volume']:.3f} m^3, LCB {hydro['LCB']:.3f} m from the transom, "
+              f"S_wet {hydro['S_wet']:.2f} m^2, LWL {hydro['LWL']:.2f} m, "
+              f"variant {'VALID' if hydro['feasible'] == 1.0 else 'NOT VALID'}")
     if args.hydro_curves:
         fr = [float(f) for f in args.drafts.split(",")]
         export_hydro_curves(args.hydro_curves, *hydrostatic_curves(params, fr))

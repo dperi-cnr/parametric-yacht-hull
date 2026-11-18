@@ -13,7 +13,7 @@ SNAME Transactions 86 (1978), pp. 197–217.
 
 | File | Content |
 |---|---|
-| `hull_grid.p3d` | structured surface grid, PLOT3D ASCII (one block, starboard half) |
+| `hull_grid.p3d` | structured surface grid, PLOT3D ASCII (one block, starboard half; all coordinates on one line) |
 | `hull_nurbs.dat` | degree and knot vectors of the B-spline whose control points are the PLOT3D points |
 | `hull.step` | STEP AP214 closed solid (hull, deck and transom), or open shell on request |
 | `hull_hydro.dat` | hydrostatics, form coefficients, Kracht's bulb parameters, stability and validity checks |
@@ -42,6 +42,7 @@ pip install -r requirements.txt
 python3 gen_hull.py                          # reads hull_params.dat, opens a 3D preview
 python3 gen_hull.py --no-plot --ni 96 --nj 32
 python3 gen_hull.py --params my_hull.dat --step my_hull.step --no-plot
+python3 gen_hull.py --no-plot --no-step --no-nurbs   # only the grid and the hydrostatics (faster)
 python3 gen_hull.py --help                   # all options
 ```
 

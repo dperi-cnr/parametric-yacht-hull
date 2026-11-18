@@ -73,7 +73,11 @@ python3 gen_hull.py --no-plot --ni=96 --nj=32
 This reads \cmd{hull\_params.dat} and writes \cmd{hull\_grid.p3d}, \cmd{hull\_nurbs.dat},
 \cmd{hull.step} and \cmd{hull\_hydro.dat}. The last line printed reports volume, LCB, wetted
 surface, LWL and whether the variant is valid (\cmd{VALID} / \cmd{NOT VALID}).
-A run takes about 5\,s.
+A run takes about 3.5\,s (less than 2\,s when the same parameters were already processed, see
+Section~\ref{sec:cache}). In an optimisation loop that needs only the grid and the validity flag:
+\begin{lstlisting}
+python3 gen_hull.py --no-plot --ni=64 --nj=24 --no-step --no-nurbs
+\end{lstlisting}
 
 To change the hull, edit \cmd{hull\_params.dat} (or pass another file with \cmd{--params}).
 
@@ -99,6 +103,10 @@ then contain these control points \\
 \cmd{--drafts LIST} & \cmd{0.5,...,1.2} & waterlines of the curves, as fractions of $T$ \\
 \cmd{--v-smooth S} & 0.04 & smoothing of the vertical node distribution along the hull \\
 \cmd{--no-plot} & off & do not open the 3D window \\
+\cmd{--no-p3d} & off & do not write the PLOT3D grid \\
+\cmd{--no-nurbs} & off & do not write the B-spline file \\
+\cmd{--no-step} & off & do not write the STEP file \\
+\cmd{--no-hydro} & off & do not compute and write the hydrostatics and validity checks \\
 \bottomrule
 \end{longtable}
 
@@ -215,8 +223,14 @@ reported by \cmd{chk\_proportions} \\
 %=====================================================================
 \section{Output files}
 \subsection{PLOT3D grid}
-ASCII, one block, \cmd{ni nj 1}, then all $x$, all $y$, all $z$ (index $i$ fastest), with
-$i$ from bow to transom and $j$ from deck to keel. With \cmd{--nurbs-fit approx} (default) the
+ASCII, three lines: the number of blocks (1), then \cmd{ni nj 1}, then all the coordinates on a
+single line: all $x$, all $y$, all $z$, index $i$ fastest, with $i$ from bow to transom and $j$ from
+deck to keel. It is read in Fortran by
+\begin{lstlisting}
+read(22,*) nb
+read(22,*) ni,nj,nk
+read(22,*) ((x(i,j),i=1,ni),j=1,nj),((y(i,j),i=1,ni),j=1,nj),((z(i,j),i=1,ni),j=1,nj)
+\end{lstlisting} With \cmd{--nurbs-fit approx} (default) the
 points lie on the analytic surface. With \cmd{interp} they are the control points of the
 interpolating B-spline.
 
@@ -284,7 +298,14 @@ $S_{wet}$, $C_B$, $C_{WP}$.
 \item[\cmd{Cp\_minus\_input}, \cmd{LCB\_minus\_input} not zero] expected when
   \cmd{bulb\_implicit} $<1$ (the bulb adds volume). With \cmd{bulb\_implicit} $=1$ they are only
   non-zero in extreme corners, where the compensated bare hull is not reachable.
-\item[Run time] about 5\,s per hull; the section table is computed once per process.
+\item[Run time] \label{sec:cache} about 3.5\,s per hull. The writing of the files takes less than
+  0.1\,s; most of the time goes into the layout of the area curve, the calibration of the bulb
+  breadth and the volume correction. Two caches in \cmd{\_\_pycache\_\_} next to the script avoid
+  repeated work between processes: the section table (computed once, about 2\,s) and the derived
+  quantities of the last 32 parameter sets, keyed by a hash of the script and of all the
+  parameters. A second process with the same parameters (for example a pre-processing script
+  followed by the grid generation) takes less than 2\,s. Deleting the cache files is always
+  safe.
 \end{description}
 
 \begin{thebibliography}{9}
