@@ -74,7 +74,7 @@ This reads \cmd{hull\_params.dat} and writes \cmd{hull\_grid.p3d}, \cmd{hull\_nu
 \cmd{hull.step} and \cmd{hull\_hydro.dat}. The last line printed reports volume, LCB, wetted
 surface, LWL and whether the variant is valid (\cmd{VALID} / \cmd{NOT VALID}).
 A run takes about 3.5\,s (less than 2\,s when the same parameters were already processed, see
-Section~\ref{sec:cache}). In an optimisation loop that needs only the grid and the validity flag:
+Section~\ref{sec:cache}). In a batch loop that needs only the grid and the validity flag:
 \begin{lstlisting}
 python3 gen_hull.py --no-plot --ni=64 --nj=24 --no-step --no-nurbs
 \end{lstlisting}
@@ -126,7 +126,7 @@ then contain these control points \\
 %=====================================================================
 \section{Parameters}
 \label{sec:params}
-All 30 shape parameters and the fixed datum of Section~\ref{sec:fixed} are required (order does
+All 30 shape parameters and the fixed datum \cmd{volume} of Section~\ref{sec:fixed} are required, the optional fixed data take their defaults when absent (order does
 not matter). Relative parameters (marked R) place a quantity
 within its admissible range: 0 is one end, 1 the other.
 
@@ -194,7 +194,7 @@ the complete hull has exactly \cmd{Cp} and \cmd{LCB} \\
 \caption{Effect of \cmd{bow\_convexity} and \cmd{entrance\_angle} on the forebody waterlines.}
 \end{figure}
 
-\subsection*{Fixed datum}
+\subsection*{Fixed data}
 \label{sec:fixed}
 \begin{longtable}{L{3.0cm}L{12.3cm}}
 \toprule
@@ -205,8 +205,16 @@ product $B\,T$, which \cmd{beam\_rel} splits into beam and draft. Realistic prop
 only if, approximately, $0.0046\,L^3 \le \nabla \le 0.0143\,L^3$ (e.g. 125--386\,m$^3$ at
 $L = 30$\,m); the exact limits depend on $C_P$ and $C_M$, and a combination outside them is
 reported by \cmd{chk\_proportions} \\
+\cmd{draft} (optional) & imposed draft $T$ [m] (default 0 = not imposed). With a draft, $T$ is fixed,
+$B = \nabla/(C_P\,C_M\,L\,T)$ (corrected so that the volume of the complete hull is exact) and
+\cmd{beam\_rel} is not used. \cmd{chk\_proportions} then requires $3.5 \le L/B \le$ \cmd{LB\_max} and
+$2 \le B/T \le 6$. Use it when a rule fixes or limits the draft (e.g. harbour restrictions) \\
+\cmd{LB\_max} (optional) & upper limit of $L/B$ for the beam window and for \cmd{chk\_proportions}
+(default 0 = 6.0) \\
 \bottomrule
 \end{longtable}
+With an imposed draft, $L/B = C_P C_M L^2 T/\nabla$ depends on $L$, $C_P$ and $C_M$: choose their
+bounds so that $L/B$ stays below \cmd{LB\_max} in every corner.
 
 \paragraph{Notes on the relative parameters.}
 \begin{itemize}

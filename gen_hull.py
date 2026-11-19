@@ -19,7 +19,12 @@ PARAM_NAMES = [
 # Fixed hull data (not shape parameters): required in the parameter file together with
 # PARAM_NAMES, but not part of the vector of shape parameters
 FIXED_NAMES = ["volume"]
-ALL_NAMES = PARAM_NAMES + FIXED_NAMES
+# Optional fixed data, with the value used when they are absent:
+# - draft: imposed draft T [m]; 0 = T follows from beam_rel within the beam window. With a
+#   draft, B = kappa volume / (Cp Cm L T) and beam_rel is not used;
+# - LB_max: upper limit of L / B (beam window and proportions check); 0 = LB_RANGE[1].
+OPTIONAL_FIXED = {"draft": 0.0, "LB_max": 0.0}
+ALL_NAMES = PARAM_NAMES + FIXED_NAMES + list(OPTIONAL_FIXED)
 
 # Internal geometric constants
 RHO_SEA = 1.025              # sea water density [t/m^3]
@@ -45,22 +50,50 @@ CONVEX_RAMP = 0.02           # above CONVEX_MIN_P the convex weight grows from 0
 SECTION_Q_GRID = np.arange(1.5, 14.01, 0.5)   # tabulated bilge exponents for the section family
 
 
-LB_RANGE = (3.5, 6.0)        # admissible L / B (B maximum waterline beam)
+LB_RANGE = (3.5, 6.0)        # admissible L / B (B maximum waterline beam); the upper limit can be set by LB_max
 BT_RANGE = (2.4, 3.6)        # admissible B / T
+BT_RANGE_DRAFT = (2.0, 6.0)  # admissible B / T with an imposed draft (wide, shallow ships included)
+
+
+def _pkey(p):
+    """Values of all the parameter names (optional fixed data at their defaults when absent)."""
+    return tuple(float(p[n]) if n in p else float(OPTIONAL_FIXED[n]) for n in ALL_NAMES)
+
+
+def _lb_max(p):
+    """Upper limit of L / B: LB_max if given (> 0), else LB_RANGE[1]."""
+    v = p.get('LB_max', 0.0)
+    return v if v > 0.0 else LB_RANGE[1]
+
+
+def _draft(p):
+    """Imposed draft [m], or 0 if the draft follows from beam_rel."""
+    return p.get('draft', 0.0)
 
 
 def beam_window(p, bt):
     """
-    Interval of admissible beams B for the product B T = bt: L / B in LB_RANGE and
+    Interval of admissible beams B for the product B T = bt: L / B in [LB_RANGE[0], LB_max] and
     B / T = B^2 / bt in BT_RANGE. Returns (B_min, B_max, empty); if the intersection is empty
     (volume incompatible with L, Cp and Cm) only the B / T interval is used and empty = True.
     """
     L = p['L']
-    lo = max(L / LB_RANGE[1], math.sqrt(BT_RANGE[0] * bt))
+    lo = max(L / _lb_max(p), math.sqrt(BT_RANGE[0] * bt))
     hi = min(L / LB_RANGE[0], math.sqrt(BT_RANGE[1] * bt))
     if lo <= hi:
         return lo, hi, False
     return math.sqrt(BT_RANGE[0] * bt), math.sqrt(BT_RANGE[1] * bt), True
+
+
+def _proportions_ok(p, B_half, T):
+    """
+    Realistic main proportions: without an imposed draft, the beam window is not empty;
+    with an imposed draft, L / B in [LB_RANGE[0], LB_max] and B / T in BT_RANGE_DRAFT.
+    """
+    if _draft(p) <= 0.0:
+        return not beam_window(p, 2.0 * B_half * T)[2]
+    lb, bt = p['L'] / (2.0 * B_half), 2.0 * B_half / T
+    return (LB_RANGE[0] <= lb <= _lb_max(p) + 1e-9) and (BT_RANGE_DRAFT[0] <= bt <= BT_RANGE_DRAFT[1])
 
 
 def dimensions(p):
@@ -69,15 +102,20 @@ def dimensions(p):
     is given: B T = kappa volume / (Cp Cm L), with kappa found by iteration (_bt_correction) so
     that the volume of the complete hull is exact (kappa = 1 with the compensated bulb, except in
     extreme corners). B is chosen by beam_rel within beam_window (realistic L / B and
-    B / T), T = B T / B (draft of the horizontal keel), H_deck = T + F_over_L L (deck at the
-    transom). Returns (B_half, T, H_deck).
+    B / T), T = B T / B (draft of the horizontal keel); with an imposed draft (optional fixed
+    datum 'draft' > 0) T is that draft and B = B T / T (beam_rel unused). H_deck = T + F_over_L L
+    (deck at the transom). Returns (B_half, T, H_deck).
     """
     L = p['L']
     kappa = p['_bt_corr'] if '_bt_corr' in p else _bt_correction(p)
     bt = kappa * p['volume'] / (p['Cp'] * p['Cm'] * L)
-    lo, hi, _ = beam_window(p, bt)
-    b = lo + p['beam_rel'] * (hi - lo)
-    t = bt / b
+    if _draft(p) > 0.0:
+        t = _draft(p)
+        b = bt / t
+    else:
+        lo, hi, _ = beam_window(p, bt)
+        b = lo + p['beam_rel'] * (hi - lo)
+        t = bt / b
     return 0.5 * b, t, t + p['F_over_L'] * L
 
 
@@ -85,7 +123,7 @@ _BT_CACHE = {}
 
 
 # Cache on disk of the derived quantities (kappa, form_data), shared between processes: a run of
-# update_params_siren.py followed by gen_hull.py with the same parameters solves them only once.
+# a pre-processing script followed by gen_hull.py with the same parameters solves them only once.
 # Keyed by a hash of this source file and the parameter values; at most _DISK_CACHE_MAX entries.
 _DISK_CACHE = None
 _DISK_CACHE_MAX = 32
@@ -138,7 +176,7 @@ def _bt_correction(p):
     already holds unless the compensated bare hull is not reachable (extreme corners, see
     _sac_layout); with an additive bulb, bulb and stem add volume.
     """
-    key = tuple(float(p[n]) for n in ALL_NAMES)
+    key = _pkey(p)
     if key in _BT_CACHE:
         return _BT_CACHE[key]
     stored = _disk_get('kappa', key)
@@ -476,7 +514,7 @@ def form_data(p):
     """
     if '_bt_corr' not in p:
         return form_data(dict(p, _bt_corr=_bt_correction(p)))
-    key = tuple(float(p[n]) for n in ALL_NAMES) + (float(p['_bt_corr']),)
+    key = _pkey(p) + (float(p['_bt_corr']),)
     if key in _DERIVED_CACHE:
         return _DERIVED_CACHE[key]
     stored = _disk_get('form', key)
@@ -617,7 +655,8 @@ def section_k(c, q):
 def load_parameters(filename="hull_params.dat"):
     """
     Reads the shape and dimension parameters from the external ASCII file.
-    All names in ALL_NAMES (shape parameters and fixed data) are required; unknown names are an error.
+    The shape parameters and FIXED_NAMES are required, OPTIONAL_FIXED take their defaults when
+    absent; unknown names are an error.
     """
     params = {}
     if not os.path.exists(filename):
@@ -632,10 +671,12 @@ def load_parameters(filename="hull_params.dat"):
                 val_str, key_str = line.split('=')
                 params[key_str.strip()] = float(val_str.strip())
 
-    missing = [n for n in ALL_NAMES if n not in params]
+    missing = [n for n in PARAM_NAMES + FIXED_NAMES if n not in params]
     unknown = [n for n in params if n not in ALL_NAMES]
     if missing or unknown:
         raise ValueError(f"'{filename}': missing parameters {missing}, unknown parameters {unknown}")
+    for n, v in OPTIONAL_FIXED.items():
+        params.setdefault(n, v)
 
     return params
 
@@ -1298,7 +1339,7 @@ def feasibility_checks(p, hydro=None, n_u=500, n_v=160):
         # volume of the complete hull equal to the given one; L / B and B / T within bounds
         # (fails only if the volume is incompatible with L, Cp and Cm)
         "chk_volume": float(abs(hydro['volume_error']) < 2e-3),
-        "chk_proportions": float(not beam_window(p, 2.0 * B_half * T)[2]),
+        "chk_proportions": float(_proportions_ok(p, B_half, T)),
     }
     chk["feasible"] = float(all(val == 1.0 for val in chk.values()))
     return chk
