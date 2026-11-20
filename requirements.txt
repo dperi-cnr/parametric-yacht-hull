@@ -1,3 +1,6 @@
 numpy
 scipy
 matplotlib  # optional: 3D preview window only
+PyQt5      # optional: interactive viewer gen_hull_gui.py
+pyvista    # optional: interactive viewer
+pyvistaqt  # optional: interactive viewer

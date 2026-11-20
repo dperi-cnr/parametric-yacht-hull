@@ -237,6 +237,21 @@ bounds so that $L/B$ stays below \cmd{LB\_max} in every corner.
 \end{itemize}
 
 %=====================================================================
+\section{Interactive viewer}
+\begin{lstlisting}
+python3 gen_hull_gui.py [--params hull_params.dat] [--limits FILE] [--out params.inp]
+\end{lstlisting}
+Requires \cmd{PyQt5}, \cmd{pyvista} and \cmd{pyvistaqt}. The window shows the 3D hull (both sides)
+with sliders for opacity and specular reflection, and switchable sections, waterlines (from the
+keel to $1.5\,T$) and buttocks, each with a selectable number of curves. A column lists every
+parameter with an editable value and a slider; the slider bounds are taken from \cmd{--limits}
+(a file with lines \cmd{lo hi \# name} or \cmd{base lo hi \# name}) or from the bounds of
+Section~\ref{sec:params}. The hull is recomputed in a background thread (1--3\,s), and the
+status bar reports $L$, $B$, $T$, displacement, $C_B$, LCB and the validity flag with the failed
+checks. \emph{Save} writes the parameters in the format of \cmd{hull\_params.dat}; \emph{Save
+image} writes a PNG at 1--8 times the window resolution; \emph{Exit} closes the window.
+Transparency needs a desktop OpenGL context (it is not drawn with a headless Qt platform).
+
 \section{Output files}
 \subsection{PLOT3D grid}
 ASCII, three lines: the number of blocks (1), then \cmd{ni nj 1}, then all the coordinates on a

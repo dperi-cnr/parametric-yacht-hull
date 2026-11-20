@@ -31,7 +31,8 @@ SNAME Transactions 86 (1978), pp. 197–217.
 
 ## Requirements
 
-Python 3 with `numpy` and `scipy`. `matplotlib` is only needed for the optional 3D preview.
+Python 3 with `numpy` and `scipy`. `matplotlib` is only needed for the optional 3D preview;
+`PyQt5`, `pyvista` and `pyvistaqt` only for the interactive viewer `gen_hull_gui.py`.
 
 ```bash
 pip install -r requirements.txt
@@ -50,6 +51,18 @@ python3 gen_hull.py --help                   # all options
 `hull_params.dat` is an example input for a 30 m yacht: one `value = name` line per parameter.
 The meaning and bounds of every parameter, the conventions, the file formats and all output
 quantities are described in the user manual: [`doc/gen_hull_user_manual.pdf`](doc/gen_hull_user_manual.pdf).
+
+## Interactive viewer
+
+```bash
+python3 gen_hull_gui.py [--params hull_params.dat] [--limits bounds_file] [--out params.inp]
+```
+
+A window with the 3D hull (adjustable transparency and specular reflection; sections, waterlines
+and buttocks on demand) and a column with every parameter (value and slider). The hull is
+recomputed in the background while the sliders move; the status bar reports the main dimensions,
+the displacement and whether the variant is valid. *Save* writes the parameters (`value = name`,
+readable by `gen_hull.py --params`), *Save image* writes a PNG at a selectable resolution.
 
 ## License
 
