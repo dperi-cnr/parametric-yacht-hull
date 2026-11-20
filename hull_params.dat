@@ -32,5 +32,8 @@
 0.100000     = bulb_fair_over_L
 0.200000     = bulb_rise
 0.500000     = bulb_implicit
+0.000000     = section_round
+0.000000     = section_round_aft
+0.000000     = stern_flare
 # fixed data
 150.000000   = volume

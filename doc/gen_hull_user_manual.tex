@@ -28,7 +28,7 @@
 %=====================================================================
 \section{Overview}
 \cmd{gen\_hull.py} generates the hull surface of a motor yacht, $L = 20$--$50$\,m, with a
-classical bulbous bow, from 30 shape parameters and one fixed datum, the displaced volume.
+classical bulbous bow, from 33 shape parameters and one fixed datum, the displaced volume.
 It writes:
 \begin{itemize}
 \item a structured surface grid (PLOT3D) for CFD codes;
@@ -126,7 +126,7 @@ then contain these control points \\
 %=====================================================================
 \section{Parameters}
 \label{sec:params}
-All 30 shape parameters and the fixed datum \cmd{volume} of Section~\ref{sec:fixed} are required, the optional fixed data take their defaults when absent (order does
+All 33 shape parameters and the fixed datum \cmd{volume} of Section~\ref{sec:fixed} are required, the optional fixed data take their defaults when absent (order does
 not matter). Relative parameters (marked R) place a quantity
 within its admissible range: 0 is one end, 1 the other.
 
@@ -158,7 +158,7 @@ entrance angle), 1 = convex waterlines \\
 \multicolumn{4}{l}{\emph{Transom and run}}\\
 12 & \cmd{transom\_imm} & 0.02--0.30 & transom immersion $t_T/T$: low = displacement, high =
 semi-displacement \\
-13 & \cmd{transom\_beam} & 0.55--0.95 & transom waterline half-breadth $/(B/2)$ \\
+13 & \cmd{transom\_beam} & 0.15--0.95 & transom waterline half-breadth $/(B/2)$; small values give a tapering, almost closed stern \\
 14 & \cmd{c\_transom} & 0.55--0.90 & transom section coefficient \\
 15 & \cmd{transom\_rake} & $-10$--20 & transom inclination from vertical, positive with the top aft [deg] \\
 16 & \cmd{keel\_rise\_short} & 0--1 & 0 = keel rises gradually over the whole run, 1 = short rise near the
@@ -185,6 +185,14 @@ forward perpendicular $/L$ \\
 $Z_B(1-\text{bulb\_rise})$ aft \\
 30 & \cmd{bulb\_implicit} & 0--1 & 0 = bulb and stem volume added to the bare hull; 1 = compensated, so
 the complete hull has exactly \cmd{Cp} and \cmd{LCB} \\
+\multicolumn{4}{l}{\emph{Section roundness and stern topsides}}\\
+31 & \cmd{section\_round} & 0--1 & weight of the round section family on the parallel middle body
+(fading to 0 at the stem): 0 = deadrise line and vertical side, 1 = round section (U for
+$c>0.75$, wineglass for $c<0.75$) \\
+32 & \cmd{section\_round\_aft} & 0--1 & the same at the transom \\
+33 & \cmd{stern\_flare} & 0--0.8 & topside flare in the run: the side moves out by this fraction of
+$(B/2-b)$ from the waterline (vertical there) to the deck; 0 = vertical topsides, 1 = deck at full
+beam to the transom \\
 \bottomrule
 \end{longtable}
 
@@ -299,7 +307,7 @@ $S_{wet}$, $C_B$, $C_{WP}$.
 \section{Troubleshooting}
 \begin{description}
 \item[\cmd{missing parameters / unknown parameters}] the parameter file does not contain exactly the
-  30 shape parameters and the fixed \cmd{volume} of Section~\ref{sec:params} (names are checked;
+  33 shape parameters and the fixed \cmd{volume} of Section~\ref{sec:params} (names are checked;
   order does not matter).
 \item[\cmd{variant NOT VALID}] look at the \cmd{chk\_*} keys in \cmd{hull\_hydro.dat}. Within
   the bounds of Section~\ref{sec:params} this is not expected; outside them it can happen.

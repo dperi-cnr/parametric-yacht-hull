@@ -1,6 +1,6 @@
 # parametric-yacht-hull
 
-`gen_hull.py` generates the hull of a motor yacht (20–50 m) with a classical bulbous bow from 30
+`gen_hull.py` generates the hull of a motor yacht (20–50 m) with a classical bulbous bow from 33
 shape parameters and a fixed displaced volume. Every combination of parameters inside the documented bounds gives a valid,
 fair hull.
 
@@ -25,7 +25,8 @@ SNAME Transactions 86 (1978), pp. 197–217.
 | Main dimensions | length, displaced volume (fixed datum, matched exactly), relative beam (the draft follows from the volume), freeboards |
 | Volume distribution | prismatic and midship coefficients, LCB (all matched exactly), forebody fullness, parallel middle body |
 | Bow | waterline convexity, entrance angle, stem rake and curvature |
-| Run | transom immersion (displacement to semi-displacement), breadth, section shape and rake; keel rise; bilge shape; flare and tumblehome |
+| Run | transom immersion (displacement to semi-displacement), breadth (down to an almost closed stern), section shape and rake; keel rise; bilge shape; flare and tumblehome; stern flare |
+| Sections | blend of a deadrise-and-side family with a round family (U / wineglass), separately amidships and at the transom |
 | Bulb | Kracht's breadth, length and height parameters, section type (Δ / O / ∇), fairing, nose-up bend, additive or implicit volume |
 
 ## Requirements

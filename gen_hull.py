@@ -13,7 +13,8 @@ PARAM_NAMES = [
     "keel_rise_short", "bilge_softness", "bilge_softness_aft",
     "flare_over_L", "flare_aft_over_L",
     "stem_radius_over_L", "stem_rake", "stem_curvature",
-    "C_BB", "C_LPR", "C_ZB", "bulb_type", "bulb_fair_over_L", "bulb_rise", "bulb_implicit"
+    "C_BB", "C_LPR", "C_ZB", "bulb_type", "bulb_fair_over_L", "bulb_rise", "bulb_implicit",
+    "section_round", "section_round_aft", "stern_flare"
 ]
 
 # Fixed hull data (not shape parameters): required in the parameter file together with
@@ -58,6 +59,20 @@ BT_RANGE_DRAFT = (2.0, 6.0)  # admissible B / T with an imposed draft (wide, sha
 def _pkey(p):
     """Values of all the parameter names (optional fixed data at their defaults when absent)."""
     return tuple(float(p[n]) if n in p else float(OPTIONAL_FIXED[n]) for n in ALL_NAMES)
+
+
+NEW_SHAPE_DEFAULTS = {"section_round": 0.0, "section_round_aft": 0.0, "stern_flare": 0.0}
+
+
+def params_from_vector(values):
+    """
+    Shape parameters from a vector in PARAM_NAMES order. Shorter vectors (histories of the 30-
+    parameter version) leave the later parameters at the values that reproduce that version
+    (NEW_SHAPE_DEFAULTS).
+    """
+    p = dict(NEW_SHAPE_DEFAULTS)
+    p.update(zip(PARAM_NAMES, (float(v) for v in values)))
+    return p
 
 
 def _lb_max(p):
@@ -643,6 +658,20 @@ def _section_spline():
     return RectBivariateSpline(SECTION_Q_GRID, c_grid, K, kx=3, ky=3)
 
 
+@lru_cache(maxsize=1)
+def _round_spline():
+    """Cubic spline mean -> ln a of the round family (1 - (1 - zeta)^3)^a, mean Gamma(4/3) Gamma(a + 1) / Gamma(a + 4/3)."""
+    from scipy.interpolate import CubicSpline
+    la = np.linspace(math.log(1e-4), math.log(60.0), 1200)
+    mean = np.array([_mean_pow3(math.exp(x)) for x in la])
+    return CubicSpline(mean[::-1], la[::-1])
+
+
+def section_round_exponent(c):
+    """Exponent a of the round section family (1 - (1 - zeta)^3)^a with section coefficient c."""
+    return np.exp(_round_spline()(np.clip(np.asarray(c, dtype=float), 0.3, 0.9999)))
+
+
 def section_k(c, q):
     """Parameter k of the section family with section coefficient c and exponent q."""
     c_grid, _ = _section_table()
@@ -898,15 +927,27 @@ def _hull_surface(p, u_orig, v, fd=None):
         # even for low, flat sections (transom), where the blend becomes a rounded edge;
         # towards the parallel middle body the limit fades out (regularised minimum, C2 blend in u).
         k_s = section_k(c, q)
+        # weight of the round family (section_round_aft at the transom, section_round on the
+        # parallel middle body, fading to 0 at the stem like the bilge exponent)
+        r_mid, r_aft = p['section_round'], p['section_round_aft']
+        r = np.where(u < xa, r_mid + (r_aft - r_mid) * (1.0 - _smootherstep(u / xa)),
+                     r_mid * (1.0 - _smootherstep((u - xf) / (1.0 - xf))))
+        a_r = section_round_exponent(c)
         h_full = TOPSIDE_BLEND * np.maximum(deck_z - H_dwl, 1e-12)
-        h_cap = 0.043 * t / np.maximum(k_s**(-q), 1e-12)
+        h_cap = 0.043 * t / np.maximum((1.0 - r) * k_s**(-q), 1e-12)
         h_aft = (h_full**-6 + h_cap**-6)**(-1.0 / 6.0)
         w_run = _smootherstep((u - 0.7 * xa) / (0.3 * xa))
         h_b = h_aft + (h_full - h_aft) * w_run
         s_t = np.clip((z - H_dwl) / h_b, 0.0, 1.0)
         zeta = np.where(z > H_dwl, 1.0 + h_b / np.maximum(t, 1e-12) * (s_t - s_t**6 + 3.0 * s_t**5 - 2.5 * s_t**4),
                         (z - keel_z) / np.maximum(t, 1e-12))
-        y = b * _section_eta(zeta, k_s, q)
+        # Section = blend, at equal section coefficient, of the family eta (deadrise line + side)
+        # and of the round family (1 - (1 - zeta)^3)^a (a from c, see section_round_exponent):
+        # rounded bottom and bilge, vertical side reached at the waterline with zero curvature, so
+        # it continues as a vertical topside (C2); round U for c > 0.75, V for c = 0.75, wineglass
+        # (hollow garboard) for c < 0.75. The blend keeps c (hence Cm and the area curve) exact.
+        zr = np.clip((z - keel_z) / np.maximum(t, 1e-12), 0.0, 1.0)
+        y = b * ((1.0 - r) * _section_eta(zeta, k_s, q) + r * (1.0 - (1.0 - zr)**3)**a_r)
 
         # Topside flare (zero below the waterline): forward flare, zero at the stem
         # (sqrt(b)) and aft of the parallel middle body; aft/midship flare (negative = tumblehome),
@@ -915,6 +956,11 @@ def _hull_surface(p, u_orig, v, fd=None):
         fwd_w = _onset((u - xf) / (1.0 - xf))
         y = y + p['flare_over_L'] * L * np.sqrt(b / B_half) * fwd_w * above
         y = y + p['flare_aft_over_L'] * L * (1.0 - _smootherstep((u - xf) / (1.0 - xf))) * above
+        # Stern flare (run only): the topside moves out by stern_flare (B_half - b), from vertical at
+        # the waterline (onset) to the full amount at the deck. B_half - b is zero on the parallel
+        # body (C2 with it) and decreases monotonically from the transom, so the deck line stays
+        # monotone (no waist) and narrow sterns get a wider deck instead of a vertical fin.
+        y = y + p['stern_flare'] * np.where(u < xa, B_half - b, 0.0) * above
         return x, z, np.maximum(y, 0.0), b
 
     x, z, y, b_wl = _base(u_orig)
