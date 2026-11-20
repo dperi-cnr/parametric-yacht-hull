@@ -43,6 +43,8 @@ Q_BOW = 2.0                  # bilge exponent at the stem: forward sections (V-s
 STEM_FADE_DEPTH = 0.5        # below the waterline the stem rake fades out over this fraction of the draft
 CP_FWD_RANGE = (0.55, 0.90)  # admissible forebody prismatic (below: knife-edge bow, always hollow)
 CP_AFT_RANGE = (0.60, 0.95)  # admissible afterbody prismatic (transom included)
+F_AFT_MIN = 0.58             # minimum mean of the run branch (Cp_aft - a_T) / (1 - a_T): closer to 0.5 the concave
+                             # branch tends to a straight ramp with all its curvature at the start of the run (knee)
 XM_RANGE = (0.40, 0.62)      # admissible position of the midship section (centre of the parallel middle body) / L
 TOPSIDE_BLEND = 0.35         # fraction of the freeboard over which the section blends into the vertical side
 C_BOW_RANGE = (0.52, 0.75)   # section coefficient at the forward end (limits of the section family)
@@ -369,7 +371,7 @@ def _pa_of(cp, pf, xm, l):
 def _lcb_curve(cp, pf, l, a_T, lam_fwd):
     """LCB as a function of x_max (grid over XM_RANGE) for given cp and pf; nan where Cp_aft leaves CP_AFT_RANGE."""
     xs = np.linspace(XM_RANGE[0], XM_RANGE[1], 23)
-    pa_lo = max(a_T + 0.02, CP_AFT_RANGE[0])
+    pa_lo = max(a_T + F_AFT_MIN * (1.0 - a_T), CP_AFT_RANGE[0])
     out = np.full(xs.size, np.nan)
     for i, xm in enumerate(xs):
         pa = _pa_of(cp, pf, xm, l)
@@ -456,7 +458,7 @@ def _sac_layout(cp, lcb, fullness, l_max, a_T, lam_fwd):
         xm = _solve_xm(cp, lcb, pf, l, a_T, lam_fwd)
         return l, xm, _pa_of(cp, pf, xm, l), pf, cp, lcb
     # fallback: closest admissible point (l = 0)
-    pa_lo = max(a_T + 0.02, CP_AFT_RANGE[0])
+    pa_lo = max(a_T + F_AFT_MIN * (1.0 - a_T), CP_AFT_RANGE[0])
     best = None
     for pf in np.linspace(CP_FWD_RANGE[0], CP_FWD_RANGE[1], 15):
         for xm in np.linspace(XM_RANGE[0], XM_RANGE[1], 23):
@@ -685,7 +687,8 @@ def load_parameters(filename="hull_params.dat"):
     """
     Reads the shape and dimension parameters from the external ASCII file.
     The shape parameters and FIXED_NAMES are required, OPTIONAL_FIXED take their defaults when
-    absent; unknown names are an error.
+    absent, and so do the parameters added after the 30-parameter version (NEW_SHAPE_DEFAULTS, which
+    reproduce that version); unknown names are an error.
     """
     params = {}
     if not os.path.exists(filename):
@@ -700,6 +703,9 @@ def load_parameters(filename="hull_params.dat"):
                 val_str, key_str = line.split('=')
                 params[key_str.strip()] = float(val_str.strip())
 
+    # files of the 30-parameter version: the later parameters take the values that reproduce it
+    for n, v in NEW_SHAPE_DEFAULTS.items():
+        params.setdefault(n, v)
     missing = [n for n in PARAM_NAMES + FIXED_NAMES if n not in params]
     unknown = [n for n in params if n not in ALL_NAMES]
     if missing or unknown:
@@ -955,7 +961,15 @@ def _hull_surface(p, u_orig, v, fd=None):
         above = _onset((z - H_dwl) / np.maximum(deck_z - H_dwl, 1e-12))
         fwd_w = _onset((u - xf) / (1.0 - xf))
         y = y + p['flare_over_L'] * L * np.sqrt(b / B_half) * fwd_w * above
-        y = y + p['flare_aft_over_L'] * L * (1.0 - _smootherstep((u - xf) / (1.0 - xf))) * above
+        # aft/midship flare measured against a fixed reference height, the freeboard at the bow (the
+        # highest deck, so the argument never exceeds 1 and _onset is never clipped inside the hull):
+        # with the local freeboard the flare at a given height would shrink forward as the deck rises
+        # (sheer), leaving a waist in the run waterlines above the DWL. The amplitude is scaled so that
+        # the flare at the deck amidships is still flare_aft_over_L L.
+        f_ref = max(float(_deck_z(p, 1.0)) - H_dwl, 1e-12)
+        amp = 1.0 / max(float(_onset((float(_deck_z(p, 0.5)) - H_dwl) / f_ref)), 1e-6)
+        above_aft = _onset((z - H_dwl) / f_ref)
+        y = y + p['flare_aft_over_L'] * L * amp * (1.0 - _smootherstep((u - xf) / (1.0 - xf))) * above_aft
         # Stern flare (run only): the topside moves out by stern_flare (B_half - b), from vertical at
         # the waterline (onset) to the full amount at the deck. B_half - b is zero on the parallel
         # body (C2 with it) and decreases monotonically from the transom, so the deck line stays
@@ -979,7 +993,8 @@ def _hull_surface(p, u_orig, v, fd=None):
     l_round = STEM_ROUND_LEN * L
     d_bow = np.maximum((1.0 - u_orig) * L, 0.0)
     w_round = 1.0 - _smootherstep((d_bow - 2.0 * l_round) / (3.0 * l_round))
-    w_sec = np.clip(y / np.maximum(b_wl, 1e-12), 0.0, 1.0)
+    # smooth saturation (C2 at y = b, i.e. at the waterline: a plain clip leaves a curvature jump there)
+    w_sec = 1.0 - (1.0 - np.clip(y / np.maximum(b_wl, 1e-12), 0.0, 1.0))**3
     y = np.sqrt(y * y + 2.0 * r_stem * l_round * (1.0 - np.exp(-d_bow / l_round)) * w_round * w_sec)
 
     # Bulbous bow (Kracht 1978) and stem. Side profile: the bow at height z is
@@ -1082,7 +1097,9 @@ def _wetted(p, wl, fd, n_u, n_v):
     closing face of the immersed transom (both sides, normal pointing aft).
     """
     u = np.linspace(0.0, 1.0, n_u)
-    s = np.linspace(0.0, 1.0, n_v)
+    # points clustered towards the keel (s = sigma^2): full sections (Cm ~ 0.98, round family) turn
+    # from the keel to the side within ~1% of the draft, and uniform points underestimate their volume
+    s = np.linspace(0.0, 1.0, n_v)**2
     z_kd = _hull_surface(p, u[:, None], np.array([[0.0, 1.0]]), fd)[2]
     zk, zd = z_kd[:, 0], z_kd[:, 1]
     v_wl = np.clip((wl - zk) / np.maximum(zd - zk, 1e-15), 0.0, 1.0)
