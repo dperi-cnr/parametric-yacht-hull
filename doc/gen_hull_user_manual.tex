@@ -15,7 +15,7 @@
 \newcommand{\cmd}[1]{\texttt{#1}}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
 
-\title{\texttt{gen\_hull.py}\\[1ex]\large Parametric motor-yacht hull with bulbous bow --- User manual}
+\title{\texttt{gen\_hull.py}\\[1ex]\large Parametric yacht and ship hull --- User manual}
 \author{}
 \date{November 2026}
 
@@ -28,7 +28,11 @@
 %=====================================================================
 \section{Overview}
 \cmd{gen\_hull.py} generates the hull surface of a motor yacht, $L = 20$--$50$\,m, with a
-classical bulbous bow, from 33 shape parameters and one fixed datum, the displaced volume.
+bulbous bow, from 39 shape parameters and one fixed datum, the displaced volume. Larger ships
+can be generated with an imposed draft (Section~\ref{sec:fixed}). Bow and stern are continuous
+families: the bulb can be scaled down to a plain stem, the stem can be raked forward or aft, the
+forefoot moved or cut away, and the stern ranges from wide immersed transoms to closed sterns;
+named bow and stern types are provided as presets (Section~\ref{sec:presets}).
 It writes:
 \begin{itemize}
 \item a structured surface grid (PLOT3D) for CFD codes;
@@ -73,7 +77,7 @@ python3 gen_hull.py --no-plot --ni=96 --nj=32
 This reads \cmd{hull\_params.dat} and writes \cmd{hull\_grid.p3d}, \cmd{hull\_nurbs.dat},
 \cmd{hull.step} and \cmd{hull\_hydro.dat}. The last line printed reports volume, LCB, wetted
 surface, LWL and whether the variant is valid (\cmd{VALID} / \cmd{NOT VALID}).
-A run takes about 3.5\,s (less than 2\,s when the same parameters were already processed, see
+A run takes about 4\,s (about 2\,s when the same parameters were already processed, see
 Section~\ref{sec:cache}). In a batch loop that needs only the grid and the validity flag:
 \begin{lstlisting}
 python3 gen_hull.py --no-plot --ni=64 --nj=24 --no-step --no-nurbs
@@ -115,7 +119,8 @@ then contain these control points \\
 \begin{itemize}
 \item Units: metres, tonnes ($\rho = 1.025$\,t/m$^3$), degrees for angles.
 \item $x$ from the transom (at the design waterline) towards the bow; $x=L$ is the forward
-  perpendicular (stem at the design waterline). The bulb protrudes beyond $x=L$.
+  perpendicular (stem at the design waterline). The bulb protrudes beyond $x=L$; with a counter
+  stern (\cmd{stern\_overhang} $>0$) the hull extends to $x<0$ above the waterline.
 \item $z$ upwards from the horizontal keel ($z=0$); design waterline at $z=T$.
 \item $y$ to starboard; only the starboard half is generated, and port is its mirror image.
 \item Grid indices in the output files: $i = 1 \dots n_i$ from bow to transom, $j = 1 \dots n_j$
@@ -126,8 +131,9 @@ then contain these control points \\
 %=====================================================================
 \section{Parameters}
 \label{sec:params}
-All 33 shape parameters and the fixed datum \cmd{volume} of Section~\ref{sec:fixed} are required, the optional fixed data take their defaults when absent (order does
-not matter). Relative parameters (marked R) place a quantity
+The 30 parameters of the first versions and the fixed datum \cmd{volume} of
+Section~\ref{sec:fixed} are required; the parameters added later (31--39) and the optional fixed
+data take their defaults when absent, which reproduce the earlier hulls (order does not matter). Relative parameters (marked R) place a quantity
 within its admissible range: 0 is one end, 1 the other.
 
 \begin{longtable}{rL{3.6cm}L{1.9cm}L{9.0cm}}
@@ -156,11 +162,13 @@ entrance angle), 1 = convex waterlines \\
 11 & \cmd{entrance\_angle} R & 0--1 & waterline entrance half-angle within its reachable range:
 0 = smallest, 1 = largest (U-shaped vs V-shaped bow sections, at the same volume) \\
 \multicolumn{4}{l}{\emph{Transom and run}}\\
-12 & \cmd{transom\_imm} & 0.02--0.30 & transom immersion $t_T/T$: low = displacement, high =
-semi-displacement \\
-13 & \cmd{transom\_beam} & 0.15--0.95 & transom waterline half-breadth $/(B/2)$; small values give a tapering, almost closed stern \\
+12 & \cmd{transom\_imm} & 0--0.30 & transom immersion $t_T/T$: 0 = dry transom, low =
+displacement, high = semi-displacement \\
+13 & \cmd{transom\_beam} & 0--0.95 & transom waterline half-breadth $/(B/2)$; 0 = stern closed below
+the waterline (round waterline end, keel ending vertically) \\
 14 & \cmd{c\_transom} & 0.55--0.90 & transom section coefficient \\
-15 & \cmd{transom\_rake} & $-10$--20 & transom inclination from vertical, positive with the top aft [deg] \\
+15 & \cmd{transom\_rake} & $-10$--20 & transom inclination from vertical, positive with the top aft
+[deg]; a negative rake fades out for \cmd{transom\_beam} $<0.15$ (a closed stern has no transom face) \\
 16 & \cmd{keel\_rise\_short} & 0--1 & 0 = keel rises gradually over the whole run, 1 = short rise near the
 transom with parallel waterlines aft \\
 \multicolumn{4}{l}{\emph{Sections and topsides}}\\
@@ -170,7 +178,8 @@ transom with parallel waterlines aft \\
 20 & \cmd{flare\_aft\_over\_L} & $-0.01$--0.01 & flare of aft and midship topsides $/L$ (negative = tumblehome) \\
 \multicolumn{4}{l}{\emph{Stem}}\\
 21 & \cmd{stem\_radius\_over\_L} & 0.001--0.005 & radius of the stem rounding $/L$ (3--15\,cm at $L=30$\,m); the waterline stays straight up to the rounded nose \\
-22 & \cmd{stem\_rake} & 0--30 & stem inclination from vertical, top forward [deg] \\
+22 & \cmd{stem\_rake} & $-30$--30 & stem inclination from vertical above the waterline, top forward
+[deg]; negative = inverted stem (inverted bow, X-bow) \\
 23 & \cmd{stem\_curvature} & $-0.25$--0.25 & stem curvature above the waterline, fraction of the overhang (below the waterline the rake fades out, so the stem meets the bulb vertically)
 (+ convex, $-$ concave) \\
 \multicolumn{4}{l}{\emph{Bulbous bow (Kracht~\cite{kracht1978})}}\\
@@ -193,6 +202,21 @@ $c>0.75$, wineglass for $c<0.75$) \\
 33 & \cmd{stern\_flare} & 0--0.8 & topside flare in the run: the side moves out by this fraction of
 $(B/2-b)$ from the waterline (vertical there) to the deck; 0 = vertical topsides, 1 = deck at full
 beam to the transom \\
+\multicolumn{4}{l}{\emph{Counter stern and keel (experimental, see the note below)}}\\
+34 & \cmd{stern\_lift} & 0--1 & height of the end of the counter (a U-shaped transom) above the
+waterline, fraction of the freeboard at the transom (at most 0.95); $\approx 1$ = cruiser stern \\
+35 & \cmd{stern\_overhang} & 0--0.08 & length of the counter aft of the transom of the run $/L$:
+keel and buttocks cross the waterline at an angle and continue rising to the U transom; 0 = plain
+transom stern. It fades out for \cmd{transom\_beam} $<0.3$ \\
+36 & \cmd{keel\_flat} & 0--1 & horizontal closure of the sections at the keel (flat of keel), section
+coefficient unchanged; 0 at the stem \\
+\multicolumn{4}{l}{\emph{Bow type}}\\
+37 & \cmd{bulb\_size} & 0--1 & scale of the bulb (breadth, protrusion, nose): 0 = no bulb (plain
+stem), 1 = the bulb of parameters 24--29 (default 1) \\
+38 & \cmd{forefoot} & $-1$--1 & stem below the waterline moved forward ($>0$: ram, axe) or cut away
+($<0$: spoon, clipper) by $0.04\,L$ times the value at the keel \\
+39 & \cmd{bow\_tumble} & 0--0.3 & upper forward topside pulled in towards the deck (tumblehome bow;
+with \cmd{flare\_over\_L}: tulip bow) \\
 \bottomrule
 \end{longtable}
 
@@ -200,6 +224,53 @@ beam to the transom \\
 \centering
 \includegraphics[width=0.75\textwidth]{figures/bow.pdf}
 \caption{Effect of \cmd{bow\_convexity} and \cmd{entrance\_angle} on the forebody waterlines.}
+\end{figure}
+
+\paragraph{Note on parameters 34--36.} The counter stern and \cmd{keel\_flat} always give valid
+hulls, but in a part of their range the automatic fairness check still finds curvature spikes near
+the transom (junction of the counter with the run, buttocks near the keel). They are documented
+as experimental; keep them at 0 for production runs until they are finalised.
+
+\subsection{Bow and stern types}
+\label{sec:presets}
+\cmd{gen\_hull.BOW\_PRESETS} and \cmd{gen\_hull.STERN\_PRESETS} give the parameter values of named
+types (Figure~\ref{fig:types}); they are points of the same continuous parameter space, useful as
+starting values, and every intermediate value is a valid hull as well.
+\begin{longtable}{L{2.6cm}L{12.6cm}}
+\toprule
+Bow type & \cmd{bulb\_size}, \cmd{stem\_rake}, \cmd{stem\_curvature}, \cmd{forefoot}, \cmd{flare\_over\_L}, \cmd{bow\_tumble} \\ \midrule
+bulbous & 1, 20, 0, 0, 0.010, 0 \\
+vertical & 0, 0, 0, 0, 0, 0 \\
+flared & 0, 15, 0, 0, 0.025, 0 \\
+axe & 0, 0, 0, 0.4, 0, 0 \\
+inverted & 0, $-20$, 0, 0, 0, 0 \\
+clipper & 0, 30, $-0.25$, $-0.4$, 0.025, 0 \\
+tulip & 0, 15, 0, 0, 0.025, 0.25 \\
+ram & 0, 10, 0, 1, 0.005, 0 \\
+spoon & 0, 30, 0.25, $-1$, 0.010, 0 \\
+S-curved & 0, 20, $-0.25$, 0.6, 0.010, 0 \\
+raked & 0, 25, 0, 0, 0.005, 0 \\
+X-bow & 0, $-25$, 0, 0, 0.020, 0 \\
+LEADGE-like & 0, $-5$, 0, 0.3, 0, 0 \\
+tumblehome & 0, $-10$, 0, 0, 0, 0.25 \\
+\midrule
+Stern type & \cmd{transom\_imm}, \cmd{transom\_beam}, \cmd{transom\_rake}, \cmd{section\_round\_aft}, \cmd{c\_transom}, \cmd{stern\_flare}, \cmd{stern\_lift}, \cmd{stern\_overhang} \\ \midrule
+transom & 0.10, 0.80, 5, 0, 0.75, 0, 0, 0 \\
+raked transom & 0.10, 0.80, 18, 0.3, 0.75, 0.2, 0, 0 \\
+counter & 0, 0.70, 10, 1, 0.80, 0.3, 0.4, 0.04 \\
+cruiser & 0, 0.50, 0, 1, 0.80, 0.3, 0.9, 0.04 \\
+cruiser spoon & 0, 0.50, 0, 1, 0.80, 0.3, 0.9, 0.08 \\
+\bottomrule
+\end{longtable}
+LEADGE-like, S-curved and tulip are approximations within these parameters.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/bow_types.pdf}\\[1ex]
+\includegraphics[width=\textwidth]{figures/stern_types.pdf}
+\caption{Bow types (stem profile, keel and deck) and stern types (profile; transom outline and
+sections just forward of it) on the default hull.}
+\label{fig:types}
 \end{figure}
 
 \subsection*{Fixed data}
@@ -233,7 +304,9 @@ bounds so that $L/B$ stays below \cmd{LB\_max} in every corner.
   (\cmd{x\_max}, \cmd{Cp\_fwd\_bare}, \cmd{Cp\_aft\_bare}).
 \item \cmd{C\_BB} is matched exactly when the hull itself is narrower than $B_B$ at the forward
   perpendicular; otherwise the bulb keeps a minimum amplitude and the effective value is
-  reported (\cmd{C\_BB\_target}, \cmd{C\_BB\_eff}).
+  reported (\cmd{C\_BB\_target}, \cmd{C\_BB\_eff}). With \cmd{bulb\_size} $<1$ the target is
+  $\cmd{bulb\_size}\,B_B$; a partial bulb on a cut-away forefoot sits aft of the forward
+  perpendicular, where $B_B$ is defined, and its breadth is then the nominal one.
 \end{itemize}
 
 %=====================================================================
@@ -248,8 +321,12 @@ parameter with an editable value and a slider; the slider bounds are taken from 
 (a file with lines \cmd{lo hi \# name} or \cmd{base lo hi \# name}) or from the bounds of
 Section~\ref{sec:params}. The hull is recomputed in a background thread (1--3\,s), and the
 status bar reports $L$, $B$, $T$, displacement, $C_B$, LCB and the validity flag with the failed
-checks. \emph{Save} writes the parameters in the format of \cmd{hull\_params.dat}; \emph{Save
-image} writes a PNG at 1--8 times the window resolution; \emph{Exit} closes the window.
+checks. The \emph{Stern type} and \emph{Bow type} boxes set the parameters of a preset
+(Section~\ref{sec:presets}); they return to \emph{(current)} when one of those parameters is
+edited. \emph{Import} loads a parameter file of any version (missing newer parameters take their
+defaults; values outside a slider range widen it). \emph{Save} writes the parameters in the
+format of \cmd{hull\_params.dat}; \emph{Save image} writes a PNG at 1--8 times the window
+resolution; \emph{Exit} closes the window. The transom face is drawn as in the STEP file.
 Transparency needs a desktop OpenGL context (it is not drawn with a headless Qt platform).
 
 \section{Output files}
@@ -281,8 +358,9 @@ faces:
 \begin{itemize}
 \item the hull, one B-spline face per side;
 \item the deck, one face per side, ruled from the deck edge to the centreplane;
-\item the transom, one plane per side, bounded by the transom line and two segments to the
-  centreplane at deck height.
+\item the transom, one ruled face per side, between the transom line and its projection on the
+  centreplane (plane for a straight vertical transom; it follows a raked, U-shaped or counter
+  transom).
 \end{itemize}
 \cmd{--step-half} writes the starboard faces only, and \cmd{--step-open} the hull faces only.
 
@@ -321,15 +399,15 @@ $S_{wet}$, $C_B$, $C_{WP}$.
 %=====================================================================
 \section{Troubleshooting}
 \begin{description}
-\item[\cmd{missing parameters / unknown parameters}] the parameter file does not contain exactly the
-  33 shape parameters and the fixed \cmd{volume} of Section~\ref{sec:params} (names are checked;
-  order does not matter).
+\item[\cmd{missing parameters / unknown parameters}] the parameter file lacks one of the first 30
+  shape parameters or the fixed \cmd{volume}, or contains an unknown name (names are checked;
+  order does not matter; parameters 31--39 are optional).
 \item[\cmd{variant NOT VALID}] look at the \cmd{chk\_*} keys in \cmd{hull\_hydro.dat}. Within
   the bounds of Section~\ref{sec:params} this is not expected; outside them it can happen.
 \item[\cmd{Cp\_minus\_input}, \cmd{LCB\_minus\_input} not zero] expected when
   \cmd{bulb\_implicit} $<1$ (the bulb adds volume). With \cmd{bulb\_implicit} $=1$ they are only
   non-zero in extreme corners, where the compensated bare hull is not reachable.
-\item[Run time] \label{sec:cache} about 3.5\,s per hull. The writing of the files takes less than
+\item[Run time] \label{sec:cache} about 4\,s per hull. The writing of the files takes less than
   0.1\,s; most of the time goes into the layout of the area curve, the calibration of the bulb
   breadth and the volume correction. Two caches in \cmd{\_\_pycache\_\_} next to the script avoid
   repeated work between processes: the section table (computed once, about 2\,s) and the derived

@@ -32,13 +32,15 @@ DEFAULT_BOUNDS = {
     "L": (20.0, 50.0), "beam_rel": (0.0, 1.0), "F_over_L": (0.04, 0.08), "F_bow_over_L": (0.08, 0.14),
     "Cm": (0.70, 0.98), "Cp": (0.58, 0.70), "LCB": (-0.06, 0.005), "bow_fullness": (0.0, 1.0),
     "L_pmb": (0.0, 0.20), "bow_convexity": (0.0, 1.0), "entrance_angle": (0.0, 1.0),
-    "transom_imm": (0.02, 0.30), "transom_beam": (0.15, 0.95), "c_transom": (0.55, 0.90),
+    "transom_imm": (0.0, 0.30), "transom_beam": (0.0, 0.95), "c_transom": (0.55, 0.90),
     "transom_rake": (-10.0, 20.0), "keel_rise_short": (0.0, 1.0), "bilge_softness": (2.0, 8.0),
     "bilge_softness_aft": (2.0, 12.0), "flare_over_L": (0.0, 0.03), "flare_aft_over_L": (-0.01, 0.01),
-    "stem_radius_over_L": (0.001, 0.005), "stem_rake": (0.0, 30.0), "stem_curvature": (-0.25, 0.25),
+    "stem_radius_over_L": (0.001, 0.005), "stem_rake": (-30.0, 30.0), "stem_curvature": (-0.25, 0.25),
     "C_BB": (0.08, 0.25), "C_LPR": (0.015, 0.045), "C_ZB": (0.30, 0.62), "bulb_type": (0.0, 1.0),
     "bulb_fair_over_L": (0.05, 0.20), "bulb_rise": (0.0, 0.5), "bulb_implicit": (0.0, 1.0),
     "section_round": (0.0, 1.0), "section_round_aft": (0.0, 1.0), "stern_flare": (0.0, 0.8),
+    "stern_lift": (0.0, 1.0), "stern_overhang": (0.0, 0.08), "keel_flat": (0.0, 1.0),
+    "bulb_size": (0.0, 1.0), "forefoot": (-1.0, 1.0), "bow_tumble": (0.0, 0.3),
 }
 SLIDER_STEPS = 1000
 
@@ -90,6 +92,10 @@ class HullWorker(QtCore.QObject):
             Yb = np.concatenate([-Y[:, ::-1], Y[:, 1:]], axis=1)
             Zb = np.concatenate([Z[:, ::-1], Z[:, 1:]], axis=1)
             surf = pv.StructuredGrid(Xb, Yb, Zb).extract_surface(algorithm='dataset_surface').triangulate()
+            # transom face, ruled between the transom line and its centreplane projection (as in the STEP)
+            tx, ty, tz = Xb[0], Yb[0], Zb[0]
+            face = pv.StructuredGrid(np.stack([tx, tx], 1), np.stack([ty, 0.0 * ty], 1), np.stack([tz, tz], 1))
+            surf = surf.merge(face.extract_surface(algorithm='dataset_surface').triangulate()).extract_surface(algorithm='dataset_surface')
             surf = surf.compute_normals(auto_orient_normals=True, split_vertices=False)
             info = {'L': p['L'], 'B': 2.0 * Bh, 'T': T, 'D': H}
             if hydro:
@@ -197,6 +203,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sl_opacity.valueChanged.connect(self.update_material)
         self.sl_spec.valueChanged.connect(self.update_material)
 
+        # --- stern type: sets the stern parameters to a preset (all of them stay continuous)
+        self.cmb_stern = QtWidgets.QComboBox()
+        self.cmb_stern.addItems(["(current)"] + list(g.STERN_PRESETS))
+        self.cmb_stern.activated[str].connect(self.apply_stern)
+        # --- bow type: sets the bow parameters to a preset (all of them stay continuous)
+        self.cmb_bow = QtWidgets.QComboBox()
+        self.cmb_bow.addItems(["(current)"] + list(g.BOW_PRESETS))
+        self.cmb_bow.activated[str].connect(self.apply_bow)
+        tl = QtWidgets.QGridLayout()
+        tl.addWidget(QtWidgets.QLabel("Stern type"), 0, 0); tl.addWidget(self.cmb_stern, 0, 1)
+        tl.addWidget(QtWidgets.QLabel("Bow type"), 1, 0); tl.addWidget(self.cmb_bow, 1, 1)
+        tl.setColumnStretch(1, 1)
+
         # --- parameters
         box = QtWidgets.QWidget()
         pl = QtWidgets.QVBoxLayout(box)
@@ -219,14 +238,16 @@ class MainWindow(QtWidgets.QMainWindow):
         scroll.setMinimumWidth(330)
 
         # --- buttons
+        bt_import = QtWidgets.QPushButton("Import"); bt_import.clicked.connect(self.import_params)
+        bt_import.setToolTip("Load a configuration (hull_params.dat or a saved params.inp)")
         bt_save = QtWidgets.QPushButton("Save"); bt_save.clicked.connect(self.save_params)
         bt_img = QtWidgets.QPushButton("Save image"); bt_img.clicked.connect(self.save_image)
         bt_exit = QtWidgets.QPushButton("Exit"); bt_exit.clicked.connect(self.close)
-        bl = QtWidgets.QHBoxLayout(); bl.addWidget(bt_save); bl.addWidget(bt_img); bl.addWidget(bt_exit)
+        bl = QtWidgets.QHBoxLayout(); bl.addWidget(bt_import); bl.addWidget(bt_save); bl.addWidget(bt_img); bl.addWidget(bt_exit)
 
         right = QtWidgets.QWidget()
         rl = QtWidgets.QVBoxLayout(right)
-        rl.addWidget(disp); rl.addWidget(scroll, 1); rl.addLayout(bl)
+        rl.addWidget(disp); rl.addLayout(tl); rl.addWidget(scroll, 1); rl.addLayout(bl)
         right.setMaximumWidth(420)
         split = QtWidgets.QSplitter()
         split.addWidget(self.plotter.interactor); split.addWidget(right)
@@ -250,7 +271,55 @@ class MainWindow(QtWidgets.QMainWindow):
     # ----- computation
     def param_changed(self, name, value):
         self.params[name] = value
+        if any(name in v for v in g.STERN_PRESETS.values()):
+            self.cmb_stern.setCurrentIndex(0)
+        if any(name in v for v in g.BOW_PRESETS.values()):
+            self.cmb_bow.setCurrentIndex(0)
         self.timer.start()
+
+    def set_values(self, values):
+        """Set several parameters at once (rows and model), then recompute once."""
+        for name, value in values.items():
+            row = self.rows[name]
+            if not row.spin.minimum() <= value <= row.spin.maximum():   # e.g. a ship imported into a yacht session
+                span = max(abs(row.hi - row.lo), abs(value), 1e-9)
+                row.spin.setRange(min(row.spin.minimum(), value - span), max(row.spin.maximum(), value + span))
+            row.spin.blockSignals(True); row.spin.setValue(value); row.spin.blockSignals(False)
+            row._set_slider(value)
+            self.params[name] = float(value)
+        self.timer.start()
+
+    def apply_stern(self, name):
+        if name in g.STERN_PRESETS:
+            self.set_values(g.STERN_PRESETS[name])
+            self.status.showMessage(f"stern type: {name}")
+
+    def apply_bow(self, name):
+        if name in g.BOW_PRESETS:
+            self.set_values(g.BOW_PRESETS[name])
+            self.status.showMessage(f"bow type: {name}")
+
+    def import_params(self, fn=None):
+        """Load a configuration file (hull_params.dat format; older versions get the defaults of the
+        parameters added later). The slider bounds of the fixed data follow the new values."""
+        if not fn:
+            fn, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Import configuration", "",
+                                                          "Parameter files (*.dat *.inp);;All files (*)")
+        if not fn:
+            return
+        try:
+            p = g.load_parameters(fn)
+        except Exception as err:
+            QtWidgets.QMessageBox.warning(self, "Import", f"{fn}:\n{err}")
+            return
+        fb = fixed_bounds(p)
+        for name in g.FIXED_NAMES + list(g.OPTIONAL_FIXED):
+            row = self.rows[name]
+            row.lo, row.hi = fb.get(name, (row.lo, row.hi))
+        self.set_values({name: float(p[name]) for name in self.rows if name in p})
+        self.cmb_stern.setCurrentIndex(0); self.cmb_bow.setCurrentIndex(0)
+        self.first = True                     # re-frame the camera on the imported hull
+        self.status.showMessage(f"imported {fn}")
 
     def submit(self):
         if self.busy:

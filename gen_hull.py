@@ -14,7 +14,8 @@ PARAM_NAMES = [
     "flare_over_L", "flare_aft_over_L",
     "stem_radius_over_L", "stem_rake", "stem_curvature",
     "C_BB", "C_LPR", "C_ZB", "bulb_type", "bulb_fair_over_L", "bulb_rise", "bulb_implicit",
-    "section_round", "section_round_aft", "stern_flare"
+    "section_round", "section_round_aft", "stern_flare", "stern_lift", "stern_overhang", "keel_flat",
+    "bulb_size", "forefoot", "bow_tumble"
 ]
 
 # Fixed hull data (not shape parameters): required in the parameter file together with
@@ -40,7 +41,18 @@ BULB_FILL_TOP = 0.95         # aft of the FP the bulb top rises towards this fra
 BULB_NODE_FRAC = 0.15        # share of the longitudinal grid nodes reserved for the bulb and its fairing
 STEM_ROUND_LEN = 0.05        # length scale (fraction of L) of the stem rounding term; it fades out between 2 and 5 times this
 Q_BOW = 2.0                  # bilge exponent at the stem: forward sections (V-shaped) always turn softly
+FOREFOOT_LEN = 0.04          # forefoot = +-1 moves the stem at the keel by this fraction of L (forward / aft)
 STEM_FADE_DEPTH = 0.5        # below the waterline the stem rake fades out over this fraction of the draft
+KEEL_FLAT_A = 0.5            # exponent of the flat-bottomed family used by keel_flat (parabolic keel, finite radius)
+KEEL_FLAT_C = 0.841309       # its section coefficient: int_0^1 (1 - (1 - z)^3)^0.5 dz
+KEEL_C_IN = (0.55, 0.985)    # range of the section coefficient left to the other families (caps keel_flat)
+COUNTER_FD_STEP = 0.002      # station step (fraction of L) of the one-sided derivatives of the run at the transom
+COUNTER_BEAM = 0.3           # the counter fades out as transom_beam goes below this (no transom to continue)
+COUNTER_SLOPE = 1.5          # largest mean slope of the counter underside (rise / length)
+COUNTER_LIFT_MAX = 0.95      # highest end of the counter (fraction of the freeboard): a small transom remains
+TRANSOM_MIN = 1e-4           # floor of transom_imm and transom_beam (0 = closed stern below the WL)
+RUN_EPS = 0.1                # regularisation of the gradual run law near a tiny transom area (_run_deficit)
+TRANSOM_RAKE_BEAM = 0.15     # a negative transom_rake fades out for transom_beam below this
 CP_FWD_RANGE = (0.55, 0.90)  # admissible forebody prismatic (below: knife-edge bow, always hollow)
 CP_AFT_RANGE = (0.60, 0.95)  # admissible afterbody prismatic (transom included)
 F_AFT_MIN = 0.58             # minimum mean of the run branch (Cp_aft - a_T) / (1 - a_T): closer to 0.5 the concave
@@ -63,8 +75,48 @@ def _pkey(p):
     return tuple(float(p[n]) if n in p else float(OPTIONAL_FIXED[n]) for n in ALL_NAMES)
 
 
-NEW_SHAPE_DEFAULTS = {"section_round": 0.0, "section_round_aft": 0.0, "stern_flare": 0.0}
+NEW_SHAPE_DEFAULTS = {"section_round": 0.0, "section_round_aft": 0.0, "stern_flare": 0.0,
+                      "stern_lift": 0.0, "stern_overhang": 0.0, "keel_flat": 0.0,
+                      "bulb_size": 1.0, "forefoot": 0.0, "bow_tumble": 0.0}
 
+# Stern types as points of the continuous parameter space (starting values for the GUI and for
+# a design study; any intermediate value is a valid stern as well). stern_overhang = counter
+# length / L (aft of the transom of the run, above the waterline), stern_lift = height of its end
+# (the U-shaped transom) above the waterline / freeboard; transom_imm = 0 is a dry transom of the run.
+STERN_PRESETS = {
+    "transom":       dict(transom_imm=0.10, transom_beam=0.80, transom_rake=5.0, section_round_aft=0.0,
+                          c_transom=0.75, stern_flare=0.0, stern_lift=0.0, stern_overhang=0.0),
+    "raked transom": dict(transom_imm=0.10, transom_beam=0.80, transom_rake=18.0, section_round_aft=0.3,
+                          c_transom=0.75, stern_flare=0.2, stern_lift=0.0, stern_overhang=0.0),
+    "counter":       dict(transom_imm=0.0, transom_beam=0.70, transom_rake=10.0, section_round_aft=1.0,
+                          c_transom=0.80, stern_flare=0.3, stern_lift=0.4, stern_overhang=0.04),
+    "cruiser":       dict(transom_imm=0.0, transom_beam=0.50, transom_rake=0.0, section_round_aft=1.0,
+                          c_transom=0.80, stern_flare=0.3, stern_lift=0.9, stern_overhang=0.04),
+    "cruiser spoon": dict(transom_imm=0.0, transom_beam=0.50, transom_rake=0.0, section_round_aft=1.0,
+                          c_transom=0.80, stern_flare=0.3, stern_lift=0.9, stern_overhang=0.08),
+}
+
+
+# Bow types as points of the continuous parameter space (bulb_size 0 = no bulb; stem_rake < 0 =
+# inverted stem; forefoot > 0 forward / < 0 cut away below the waterline; bow_tumble = upper
+# topside pulled in; with flare_over_L: flared / tulip). Starting values, like STERN_PRESETS.
+_B = ("bulb_size", "stem_rake", "stem_curvature", "forefoot", "flare_over_L", "bow_tumble")
+BOW_PRESETS = {name: dict(zip(_B, v)) for name, v in (
+    ("bulbous",     (1.0, 20.0, 0.0, 0.0, 0.010, 0.0)),
+    ("vertical",    (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)),
+    ("flared",      (0.0, 15.0, 0.0, 0.0, 0.025, 0.0)),
+    ("axe",         (0.0, 0.0, 0.0, 0.4, 0.0, 0.0)),
+    ("inverted",    (0.0, -20.0, 0.0, 0.0, 0.0, 0.0)),
+    ("clipper",     (0.0, 30.0, -0.25, -0.4, 0.025, 0.0)),
+    ("tulip",       (0.0, 15.0, 0.0, 0.0, 0.025, 0.25)),
+    ("ram",         (0.0, 10.0, 0.0, 1.0, 0.005, 0.0)),
+    ("spoon",       (0.0, 30.0, 0.25, -1.0, 0.010, 0.0)),
+    ("S-curved",    (0.0, 20.0, -0.25, 0.6, 0.010, 0.0)),
+    ("raked",       (0.0, 25.0, 0.0, 0.0, 0.005, 0.0)),
+    ("X-bow",       (0.0, -25.0, 0.0, 0.0, 0.020, 0.0)),
+    ("LEADGE-like", (0.0, -5.0, 0.0, 0.3, 0.0, 0.0)),
+    ("tumblehome",  (0.0, -10.0, 0.0, 0.0, 0.0, 0.25)),
+)}
 
 def params_from_vector(values):
     """
@@ -476,7 +528,10 @@ def _form_core(p, cp, lcb):
     Form quantities of the bare hull for prismatic cp and LCB lcb (see form_data and _sac_layout):
     x_max is solved for, the parallel middle body is at most L_pmb.
     """
-    rho_T = p['transom_imm'] * p['transom_beam']
+    # transom immersion and breadth may go to 0 (closed stern below the WL): they are floored at
+    # TRANSOM_MIN, where the immersed transom is negligible but the logarithmic run split stays finite
+    imm_T, beam_T = max(p['transom_imm'], TRANSOM_MIN), max(p['transom_beam'], TRANSOM_MIN)
+    rho_T = imm_T * beam_T
     a_T = rho_T * p['c_transom'] / p['Cm']
     l_pmb, xm, cp_aft, cp_fwd, cp, lcb = _sac_layout(float(cp), float(lcb), float(p['bow_fullness']),
                                                      float(p['L_pmb']), float(a_T), bow_lambda(p))
@@ -504,7 +559,7 @@ def _form_core(p, cp, lcb):
         'a_T': a_T, 'rho_T': rho_T, 'xa': xm - 0.5 * l_pmb, 'xf': xf,
         'x_max': xm, 'L_pmb_eff': l_pmb,
         'c_bow': c_bow, 'i_E': math.degrees(i_e), 'i_E_min': math.degrees(i_lo), 'i_E_max': math.degrees(i_hi),
-        'beta_aft': math.log(p['transom_imm']) / math.log(rho_T),
+        'beta_aft': math.log(imm_T) / math.log(rho_T),
         'Cp_bare': cp, 'LCB_bare': lcb,
         'Cp_aft': cp_aft, 'Cp_fwd': cp_fwd,
         'F_aft': (cp_aft - a_T) / (1.0 - a_T),
@@ -542,7 +597,7 @@ def form_data(p):
     B_half, T, _ = dimensions(p)
     A_M = p['Cm'] * 2.0 * B_half * T
     B_B, L_PR, Z_B, H_B = bulb_dimensions(p)
-    target = 0.5 * B_B
+    target = 0.5 * B_B * p['bulb_size']      # bulb_size scales the bulb (0 = plain stem, no bulb)
     w = p['bulb_implicit']
     cp_b, lcb_b = p['Cp'], p['LCB']
     b_bulb = target
@@ -834,6 +889,19 @@ def bulb_dimensions(p):
     return p['C_BB'] * 2.0 * B_half, p['C_LPR'] * p['L'], Z_B, Z_B / zm
 
 
+def _run_eps(R0, r_s):
+    """Largest eps <= RUN_EPS with r_s / (1 + eps) <= ln((1 + eps) / (e^-R0 + eps)) (bisection)."""
+    def ok(e):
+        return r_s / (1.0 + e) <= 0.999 * math.log((1.0 + e) / (math.exp(-R0) + e))
+    if ok(RUN_EPS):
+        return RUN_EPS
+    lo, hi = 0.0, RUN_EPS
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if ok(mid) else (lo, mid)
+    return lo
+
+
 def _run_deficit(R, R0, beta, lam):
     """
     Run (afterbody): with rho = a Cm / c = (b / B_half)(t / T) and R = -ln(rho) (from R0 at the transom
@@ -853,15 +921,26 @@ def _run_deficit(R, R0, beta, lam):
     """
     r_s = (1.0 - beta) * R0
     R_e = 0.5 * R0
+    # gradual law (lam = 0): the breadth share r_s = (1 - beta) R0 is spread uniformly in
+    # Rt = ln((1 + eps) / (rho + eps)) instead of R = -ln(rho): D0 = R - r_s Rt / Rt0. Same end values
+    # (D0(R0) = beta R0) and 0 <= D0' <= 1 (monotone immersion and breadth); for rho >> eps it is the
+    # former D0 = beta R, but a tiny transom area (transom_imm -> 0 with a wide transom) no longer
+    # puts the breadth change into the last fraction of a metre (inward hook of the waterlines)
+    # (eps is the largest value <= RUN_EPS with D0' >= 0, i.e. r_s / (1 + eps) <= Rt0; closed sterns,
+    # whose breadth must go to zero over the whole logarithmic range, get eps -> 0 = the former law)
+    eps = _run_eps(R0, r_s)
+    Rt = np.log((1.0 + eps) / (np.exp(-R) + eps))
+    Rt0 = math.log((1.0 + eps) / (math.exp(-R0) + eps))
+    D0 = R - r_s * Rt / Rt0
     if 2.0 * r_s < R_e:
         t = np.clip(R / R_e, 0.0, 1.0)
         D1 = R - 2.0 * r_s * (t - t**6 + 3.0 * t**5 - 2.5 * t**4)   # A R_e int (1 - smootherstep)
-        return (1.0 - lam) * beta * R + lam * D1
+        return (1.0 - lam) * D0 + lam * D1
     w = max(min(0.5 * R0, 2.0 * r_s, 2.0 * (R0 - r_s)), 1e-9)
     x = (R - r_s) / w + 0.5
     xc = np.clip(x, 0.0, 1.0)
     G = np.where(x >= 1.0, x - 0.5, xc**4 * (2.5 - 3.0 * xc + xc * xc))   # int smootherstep
-    return (1.0 - lam) * beta * R + lam * w * G
+    return (1.0 - lam) * D0 + lam * w * G
 
 
 def _deck_z(p, u):
@@ -903,8 +982,15 @@ def _hull_surface(p, u_orig, v, fd=None):
     Cm, xa, xf = p['Cm'], fd['xa'], fd['xf']
     q_mid, q_aft = p['bilge_softness'], p['bilge_softness_aft']
     R0 = -math.log(fd['rho_T'])
+    # Counter (stern_overhang = its length / L): the first share u_c of the parameter range is the
+    # counter, aft of the transom of the run (x < 0); the rest is the run-to-bow hull, u in [0, 1]
+    u_par = np.asarray(u_orig, dtype=float)
+    l_c = counter_length(p)
+    u_c = l_c / (1.0 + l_c)
+    u_phys = (u_par - u_c) / (1.0 - u_c)
+    u_orig = np.maximum(u_phys, 0.0)
 
-    def _base(u):
+    def _base(u, v=v):
         """Bare hull with flare, before stem and bulb: (x, z, y)."""
         x = u * L
         a = sectional_area(p, u, fd)
@@ -932,15 +1018,26 @@ def _hull_surface(p, u_orig, v, fd=None):
         # (section slope at the waterline): the topside stays within ~2% of b outside the waterline
         # even for low, flat sections (transom), where the blend becomes a rounded edge;
         # towards the parallel middle body the limit fades out (regularised minimum, C2 blend in u).
-        k_s = section_k(c, q)
+        # flat of keel (keel_flat): weight w_k of the flat-bottomed family phi = (1 - (1 - zeta)^3)^A_F
+        # (horizontal on the centreline, vertical side at the waterline, coefficient C_F); the rest of
+        # the section is solved for c_in = (c - w_k C_F) / (1 - w_k), so c stays exact. w_k is capped
+        # where c_in would leave the families' range (fine forward sections, box-like midship
+        # sections) and fades to 0 at the stem like the round family
+        w_k = p['keel_flat'] * np.where(u < xf, 1.0, 1.0 - _smootherstep((u - xf) / (1.0 - xf)))
+        cap = np.where(c < KEEL_FLAT_C, (c - KEEL_C_IN[0]) / (KEEL_FLAT_C - KEEL_C_IN[0]),
+                       (KEEL_C_IN[1] - c) / (KEEL_C_IN[1] - KEEL_FLAT_C))
+        cap = np.clip(0.9 * cap, 0.0, 1.0)
+        w_k = np.where(w_k > 0.0, (np.maximum(w_k, 1e-12)**-8 + np.maximum(cap, 1e-12)**-8)**-0.125, 0.0)
+        c_s = (c - w_k * KEEL_FLAT_C) / (1.0 - w_k)
+        k_s = section_k(c_s, q)
         # weight of the round family (section_round_aft at the transom, section_round on the
         # parallel middle body, fading to 0 at the stem like the bilge exponent)
         r_mid, r_aft = p['section_round'], p['section_round_aft']
         r = np.where(u < xa, r_mid + (r_aft - r_mid) * (1.0 - _smootherstep(u / xa)),
                      r_mid * (1.0 - _smootherstep((u - xf) / (1.0 - xf))))
-        a_r = section_round_exponent(c)
+        a_r = section_round_exponent(c_s)
         h_full = TOPSIDE_BLEND * np.maximum(deck_z - H_dwl, 1e-12)
-        h_cap = 0.043 * t / np.maximum((1.0 - r) * k_s**(-q), 1e-12)
+        h_cap = 0.043 * t / np.maximum((1.0 - w_k) * (1.0 - r) * k_s**(-q), 1e-12)
         h_aft = (h_full**-6 + h_cap**-6)**(-1.0 / 6.0)
         w_run = _smootherstep((u - 0.7 * xa) / (0.3 * xa))
         h_b = h_aft + (h_full - h_aft) * w_run
@@ -953,7 +1050,8 @@ def _hull_surface(p, u_orig, v, fd=None):
         # it continues as a vertical topside (C2); round U for c > 0.75, V for c = 0.75, wineglass
         # (hollow garboard) for c < 0.75. The blend keeps c (hence Cm and the area curve) exact.
         zr = np.clip((z - keel_z) / np.maximum(t, 1e-12), 0.0, 1.0)
-        y = b * ((1.0 - r) * _section_eta(zeta, k_s, q) + r * (1.0 - (1.0 - zr)**3)**a_r)
+        y = b * ((1.0 - w_k) * ((1.0 - r) * _section_eta(zeta, k_s, q) + r * (1.0 - (1.0 - zr)**3)**a_r)
+                 + w_k * (1.0 - (1.0 - zr)**3)**KEEL_FLAT_A)
 
         # Topside flare (zero below the waterline): forward flare, zero at the stem
         # (sqrt(b)) and aft of the parallel middle body; aft/midship flare (negative = tumblehome),
@@ -970,6 +1068,9 @@ def _hull_surface(p, u_orig, v, fd=None):
         amp = 1.0 / max(float(_onset((float(_deck_z(p, 0.5)) - H_dwl) / f_ref)), 1e-6)
         above_aft = _onset((z - H_dwl) / f_ref)
         y = y + p['flare_aft_over_L'] * L * amp * (1.0 - _smootherstep((u - xf) / (1.0 - xf))) * above_aft
+        # bow tumblehome (bow_tumble): the upper forward topside is pulled in by the factor
+        # 1 - bow_tumble above^2, growing towards the stem like the forward flare (with it: tulip bow)
+        y = y * (1.0 - p['bow_tumble'] * fwd_w * above * above)
         # Stern flare (run only): the topside moves out by stern_flare (B_half - b), from vertical at
         # the waterline (onset) to the full amount at the deck. B_half - b is zero on the parallel
         # body (C2 with it) and decreases monotonically from the transom, so the deck line stays
@@ -1041,18 +1142,107 @@ def _hull_surface(p, u_orig, v, fd=None):
     t_dn = np.clip(-s_st / s_dn, 0.0, 1.0)
     s_lin = np.where(s_st < 0.0, -s_dn * (t_dn - t_dn**6 + 3.0 * t_dn**5 - 2.5 * t_dn**4), s_st)
     stem = np.tan(np.radians(p['stem_rake'])) * h_f * (s_lin + p['stem_curvature'] * s_p**3 * (1.0 - s_p)**2 / 0.03456)
-    x_bow = L + (1.0 - S_x) * stem + L_PR * S_x
+    # forefoot: below the waterline the stem moves forward (forefoot > 0: ram, axe) or aft (< 0:
+    # cut-away forefoot of spoon and clipper bows) by forefoot FOREFOOT_LEN L at the keel, along a
+    # smootherstep in depth (C2 at the waterline)
+    stem = stem + p['forefoot'] * FOREFOOT_LEN * L * _smootherstep((H_dwl - z) / H_dwl)
+    # bulb_size scales the bulb: its length in the profile here, its breadth through b_bulb (form_data)
+    sz = p['bulb_size']
+    x_bow = L + (1.0 - sz * S_x) * stem + sz * L_PR * S_x
     g_b = _smootherstep((u_orig - (1.0 - BULB_STRETCH_FRAC)) / BULB_STRETCH_FRAC)
     x = x + g_b * (x_bow - L)
     d_nose = np.maximum(x_bow - x, 0.0)
-    lam_sq = ((1.0 - (1.0 - np.clip(d_nose / L_PR, 0.0, 1.0))**3)
-              * (1.0 - _smootherstep((d_nose - L_PR) / l_fair)))
+    # (nose rounding over the actual protrusion sz L_PR: a smaller bulb is a scaled copy, still at its
+    # full breadth at the FP, where b_bulb is calibrated)
+    l_nose = max(sz * L_PR, 1e-9 * L)
+    lam_sq = ((1.0 - (1.0 - np.clip(d_nose / l_nose, 0.0, 1.0))**3)
+              * (1.0 - _smootherstep((d_nose - l_nose) / l_fair)))
     y = np.sqrt(y * y + (fd['b_bulb'] * S_b)**2 * lam_sq)
 
+    # Counter stern (stern_overhang > 0): aft of the transom of the run (u = 0) the hull continues
+    # over l_c L as a counter whose end, the transom, is above the waterline (stern_lift x freeboard,
+    # at most COUNTER_LIFT_MAX) with a U-shaped outline. At normalised height v (z = z_k + (D - z_k) v,
+    # D = deck at the transom of the run, z_k = bottom on the centreline) the half-breadth blends, with
+    # weight E(w), w = -u / l_c, from the run extrapolated linearly in u at constant height (value and
+    # slope of the run at the transom: C1 junction) to the end width Y_e, with a bottom rounding blended
+    # in along the counter that makes the end section the half ellipse Y_e sqrt(1 - (1 - v)^2) (U transom:
+    # horizontal on the centreline, vertical at the deck), Y_e = deck half-breadth of the
+    # extrapolated run x sqrt(1 - lift^2). The centreline bottom z_k is a cubic Hermite in w from the
+    # keel at the transom of the run (with its slope: the keel and the buttocks cross the WL at an
+    # angle and keep rising) to the end height, horizontal there.
+    if l_c > 0.0:
+        cnt = u_phys < 0.0
+        if np.any(cnt):
+            w_c = np.clip(-u_phys / l_c, 0.0, 1.0)
+            h_fd = COUNTER_FD_STEP
+            vv = np.asarray(v, dtype=float)
+            # run at the transom and two steps forward: keel (v = 0), deck half-breadth (v = 1), with
+            # second-order one-sided differences for slope and curvature (C2 junction)
+            st = (0.0, h_fd, 2.0 * h_fd)
+            kz = [float(_base(np.array(uu), 0.0)[1]) for uu in st]
+            yd = [float(_base(np.array(uu), 1.0)[2]) for uu in st]
+            Dz = [float(_deck_z(p, uu)) for uu in st]
+            D0 = Dz[0]
+            kz0 = kz[0]
+            d1 = lambda f: (-3.0 * f[0] + 4.0 * f[1] - f[2]) / (2.0 * h_fd)
+            d2 = lambda f: (f[0] - 2.0 * f[1] + f[2]) / (h_fd * h_fd)
+            f_t = max(D0 - H_dwl, 1e-12)
+            lift = min(p['stern_lift'], COUNTER_LIFT_MAX)
+            slope = max(-d1(kz), 0.0) * l_c                     # keel rise per unit w at the junction
+            curv = d2(kz) * l_c * l_c                           # its curvature per unit w^2
+            # end height: raised if needed so the profile stays monotone, never steeper on average than
+            # COUNTER_SLOPE (rise / length: a short counter is a low one and tends continuously to the
+            # plain transom) and never above COUNTER_LIFT_MAX x freeboard
+            z_top = H_dwl + COUNTER_LIFT_MAX * f_t
+            z_end = min(H_dwl + lift * f_t, max(H_dwl, kz0) + COUNTER_SLOPE * l_c * L)
+            z_end = min(max(z_end, kz0 + slope / 3.0), z_top)
+            dz = max(z_end - kz0, 1e-12)
+            # quintic Hermite in w: value, slope and curvature of the keel at the junction, horizontal
+            # with zero curvature at the end; curvature (then slope) reduced if it would not be monotone
+            m0, c0 = slope / dz, curv / dz
+            ww = np.linspace(0.0, 1.0, 41)
+            for _ in range(30):
+                hp = (30 * ww**2 * (1 - ww)**2 + m0 * (1 - 18 * ww**2 + 32 * ww**3 - 15 * ww**4)
+                      + c0 * (ww - 4.5 * ww**2 + 6 * ww**3 - 2.5 * ww**4))
+                if hp.min() >= 0.0:
+                    break
+                c0 *= 0.7
+                m0 = min(m0, 3.0)
+            zk = kz0 + dz * ((10 * w_c**3 - 15 * w_c**4 + 6 * w_c**5)
+                             + m0 * (w_c - 6 * w_c**3 + 8 * w_c**4 - 3 * w_c**5)
+                             + c0 * (0.5 * w_c**2 - 1.5 * w_c**3 + 1.5 * w_c**4 - 0.5 * w_c**5))
+            zc = zk + (D0 - zk) * vv
+            # run extrapolated at constant height z (not at constant v: at the transom of a dry run a
+            # small v is at the waterline, one step forward it is near the keel): value, slope and
+            # curvature, the quadratic term faded as (1 - w)^2 so it stays bounded
+            yr = [_base(uu + 0.0 * zc, np.clip((zc - kk) / max(dd - kk, 1e-12), 0.0, 1.0))[2]
+                  for uu, kk, dd in zip(st, kz, Dz)]
+            y_ext = np.maximum(yr[0] + d1(yr) * u_phys + 0.5 * d2(yr) * u_phys**2 * (1.0 - w_c)**2, 0.0)
+            y_e = max(yd[0] - d1(yd) * l_c, 0.0) * math.sqrt(1.0 - lift * lift)
+            # plan blend E = sqrt(1 - w^4): flat at the junction (C2 with the run), vertical at the end,
+            # so the counter closes in a round plan onto its transom (no waist before a narrow end)
+            # bottom rounding: factor 1 - g (1 - R(v)), R(v) = sqrt(1 - (1 - v)^2) (half ellipse over the
+            # whole height), g = smootherstep(w): the run's own section at the junction (C2), the half
+            # ellipse at the end; U sections in between, no chine at the corner that a dry transom of
+            # the run has between its flat bottom and the side
+            e_w = np.sqrt(np.clip(1.0 - w_c**4, 0.0, 1.0))
+            g_r = _smootherstep(w_c)
+            r_v = np.sqrt(np.clip(1.0 - (1.0 - vv)**2, 0.0, 1.0))
+            yc = (1.0 - g_r * (1.0 - r_v)) * (e_w * y_ext + (1.0 - e_w) * y_e)
+            x = np.where(cnt, u_phys * L, x)
+            z = np.where(cnt, zc, z)
+            y = np.where(cnt, yc, y)
+
     # Transom raked by transom_rake (positive = top part towards aft), rotated
-    # about its trace on the waterline (x = 0), blended over TRANSOM_BLEND_FRAC L
-    x = x - (np.tan(np.radians(p['transom_rake'])) * (z - H_dwl)
-             * (1.0 - _smootherstep(u_orig / TRANSOM_BLEND_FRAC)))
+    # about its trace on the waterline (x = 0), blended over TRANSOM_BLEND_FRAC L.
+    # A negative rake fades out as transom_beam -> 0 (over TRANSOM_RAKE_BEAM): a closed stern has
+    # no transom face below the WL and its keel ends with a vertical tangent, which a forward rake
+    # (bottom pushed aft) would fold back past the stern; positive rakes are unchanged
+    rake = p['transom_rake']
+    if rake < 0.0:
+        rake *= float(_smootherstep(p['transom_beam'] / TRANSOM_RAKE_BEAM))
+    x = x - (np.tan(np.radians(rake)) * (z - H_dwl)
+             * (1.0 - _smootherstep(u_par / TRANSOM_BLEND_FRAC)))
 
     # Closure on the centreline and at the stem
     y = np.where((v <= 0.0) | (u_orig >= 1.0), 0.0, y)
@@ -1393,9 +1583,13 @@ def feasibility_checks(p, hydro=None, n_u=500, n_v=160):
         "chk_y_nonneg": float(Y.min() >= 0.0),
         # hull waterline half-breadth (aft of the bulb) <= B_half
         "chk_wl_beam": float(ywl[xs < 0.9 * p['L']].max() <= B_half * 1.001),
-        "chk_section_height": float(np.min(Z[:, -1] - Z[:, 0]) >= 0.25 * T),
+        # (run and bow only: the sections of a counter end above the waterline by design)
+        "chk_section_height": float(np.min((Z[:, -1] - Z[:, 0])[u >= u_param(p, 0.0)]) >= 0.25 * T),
         "chk_bulb_below_wl": float(H_B <= BULB_TOP_MAX * T + 1e-9),
-        "chk_C_BB": float(abs(hydro['B_B'] - form_data(p)['B_B_target']) <= 0.01 * 2.0 * B_half),
+        # (not applicable when a partial bulb sits on a cut-away forefoot: the bulb is carried aft of
+        # the FP, where Kracht's B_B is defined; its breadth is then the nominal one, see form_data)
+        "chk_C_BB": float(abs(hydro['B_B'] - form_data(p)['B_B_target']) <= 0.01 * 2.0 * B_half
+                          or hydro['B_B'] <= 1e-9 or (p['forefoot'] < 0.0 and p['bulb_size'] < 1.0)),
         "chk_volume_closure": float(abs(hydro['volume_check_z'] / hydro['volume'] - 1.0) < 2e-3),
         "chk_stern_wl_monotone": float(_stern_monotone(p)),
         "chk_cp_fwd": float(form_data(p)['Cp_fwd'] >= CP_FWD_RANGE[0] - 1e-6),
@@ -1408,6 +1602,20 @@ def feasibility_checks(p, hydro=None, n_u=500, n_v=160):
     return chk
 
 
+def counter_length(p):
+    """Counter length / L: stern_overhang, fading out as transom_beam -> 0 (COUNTER_BEAM): a counter
+    continues the transom of the run, and a closed run (no transom) would only carry a thin fin."""
+    return p['stern_overhang'] * float(_smootherstep(p['transom_beam'] / COUNTER_BEAM))
+
+
+def u_param(p, u_run):
+    """Surface parameter of the run station u_run (0 = transom of the run): the first share of the
+    parameter range, l_c / (1 + l_c) with l_c = counter_length(p), is the counter (see _hull_surface)."""
+    l_c = counter_length(p)
+    u_c = l_c / (1.0 + l_c)
+    return u_c + np.asarray(u_run, dtype=float) * (1.0 - u_c)
+
+
 def _stern_monotone(p, n_u=1500):
     """
     Run waterlines without waists: from the waterline up to 95% of the freeboard
@@ -1416,7 +1624,7 @@ def _stern_monotone(p, n_u=1500):
     """
     B_half, T, _ = dimensions(p)
     fd = form_data(p)
-    u = np.linspace(0.02 * fd['xa'], fd['xa'], n_u)
+    u = u_param(p, np.linspace(0.02 * fd['xa'], fd['xa'], n_u))
     zk = _hull_surface(p, u, 0.0)[2]
     zd = _hull_surface(p, u, 1.0)[2]
     for zz in T + np.linspace(0.0, 0.95, 8) * p['F_over_L'] * p['L']:
@@ -1703,7 +1911,9 @@ def export_step(filename, net_f, degree_u, degree_v, knots_u, knots_v, mirror=Tr
         cl_deck = P[:, 0] * np.array([1.0, 0.0, 1.0])
         e_cl_deck = edge(v_bd, v_c, curve(cl_deck, degree_u, knots_u))   # bow -> transom, y = 0
         e_top_s = edge(v_td_s, v_c, line(P[-1, 0], p_c))
-        e_cl_tr = edge(v_tk, v_c, line(P[-1, -1], p_c))
+        # centreplane edge of the transom: projection of the transom line on y = 0 (C -> keel)
+        cl_tr = P[-1, :] * np.array([1.0, 0.0, 1.0])
+        e_cl_tr = edge(v_c, v_tk, curve(cl_tr, degree_v, knots_v))
         # deck: ruled surface between the deck line and its projection on the centreplane
         mv, kv = knot_data(np.array([0.0, 0.0, 1.0, 1.0]))
         mu, ku = knot_data(knots_u)
@@ -1720,17 +1930,28 @@ def export_step(filename, net_f, degree_u, degree_v, knots_u, knots_v, mirror=Tr
             sv = cl_deck[k] - edge_pts[k]
             return np.cross(su, sv)[2] > 0.0
 
-        # transom: plane through the transom points, outward normal pointing aft
-        n_tr = np.cross([0.0, 1.0, 0.0], P[-1, -1] - p_c)
-        n_tr = -n_tr if n_tr[0] > 0.0 else n_tr
-        x_tr = np.cross([0.0, 1.0, 0.0], n_tr)
-        plane_tr = add(f"PLANE('',{add(f'AXIS2_PLACEMENT_3D({chr(39)}{chr(39)},{point(p_c)},{direction(n_tr)},{direction(x_tr)})')})")
+        # transom: ruled surface between the transom line and its projection on the centreplane
+        # (a plane for a straight raked transom, curved in profile with a stern overhang)
+        mvv, kvv = knot_data(knots_v)
+
+        def transom_surface(edge_pts):
+            rows = ",".join("(" + point(a) + "," + point(b) + ")" for a, b in zip(edge_pts, cl_tr))
+            return add(f"B_SPLINE_SURFACE_WITH_KNOTS('',{degree_v},1,({rows}),.UNSPECIFIED.,"
+                       f".F.,.F.,.F.,{mvv},{mv},{kvv},{kv},.UNSPECIFIED.)")
+
+        def transom_aft(edge_pts):
+            # normal S_u x S_v of the ruled surface at mid-height: must point aft (-x)
+            k = len(edge_pts) // 2
+            su = edge_pts[k + 1] - edge_pts[k - 1]
+            sv = cl_tr[k] - edge_pts[k]
+            return np.cross(su, sv)[0] < 0.0
 
         # starboard deck (normal +z): C -> P(1,1) along the centreplane, deck, P(ni,1) -> C
         faces.append(adv_face(deck_surface(P[:, 0]), [(e_cl_deck, False), (e_deck_s, True), (e_top_s, True)],
                               deck_up(P[:, 0])))
         # starboard transom (normal -x): P(ni,1) -> P(ni,nj) -> C -> P(ni,1)
-        faces.append(adv_face(plane_tr, [(e_tr_s, True), (e_cl_tr, True), (e_top_s, False)], True))
+        faces.append(adv_face(transom_surface(P[-1, :]), [(e_tr_s, True), (e_cl_tr, False), (e_top_s, False)],
+                              transom_aft(P[-1, :])))
 
     if mirror:
         # Port side: mirrored in y; keel, stem and centreplane edges are shared
@@ -1743,7 +1964,8 @@ def export_step(filename, net_f, degree_u, degree_v, knots_u, knots_v, mirror=Tr
             e_top_p = edge(v_td_p, v_c, line(Q[-1, 0], p_c))
             faces.append(adv_face(deck_surface(Q[:, 0]), [(e_deck_p, False), (e_cl_deck, True), (e_top_p, False)],
                                   deck_up(Q[:, 0])))
-            faces.append(adv_face(plane_tr, [(e_cl_tr, False), (e_tr_p, False), (e_top_p, True)], True))
+            faces.append(adv_face(transom_surface(Q[-1, :]), [(e_cl_tr, True), (e_tr_p, False), (e_top_p, True)],
+                                  transom_aft(Q[-1, :])))
 
     if closed and mirror:
         shell = add(f"CLOSED_SHELL('',({','.join(faces)}))")

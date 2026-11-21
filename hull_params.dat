@@ -1,6 +1,5 @@
-# Parameters of gen_hull.py (default example: 30 m motor yacht, 150 m^3)
-# Format: value = name   (all 30 shape parameters and the fixed data are required; order does not matter)
-# Meaning and admissible bounds: see doc/gen_hull_user_manual.pdf, section 'Parameters'
+# --- FILE DI CONFIGURAZIONE GENERATO AUTOMATICAMENTE ---
+# Formato: Valore = Parametro
 
 30.000000    = L
 0.500000     = beam_rel
@@ -35,5 +34,11 @@
 0.000000     = section_round
 0.000000     = section_round_aft
 0.000000     = stern_flare
-# fixed data
+0.000000     = stern_lift
+0.000000     = stern_overhang
+0.000000     = keel_flat
+1.000000     = bulb_size
+0.000000     = forefoot
+0.000000     = bow_tumble
+# dati fissi (non ottimizzati)
 150.000000   = volume

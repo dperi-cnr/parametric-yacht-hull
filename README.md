@@ -1,8 +1,12 @@
 # parametric-yacht-hull
 
-`gen_hull.py` generates the hull of a motor yacht (20–50 m) with a classical bulbous bow from 33
-shape parameters and a fixed displaced volume. Every combination of parameters inside the documented bounds gives a valid,
-fair hull.
+`gen_hull.py` generates the hull of a motor yacht (20–50 m) — or of a larger ship with an imposed
+draft — from 39 shape parameters and a fixed displaced volume. Every combination of parameters
+inside the documented bounds gives a valid, fair hull. Bow and stern are continuous families:
+bulbous or plain bow (the bulb scales down to zero), raked, vertical or inverted stem, forefoot
+moved forward or cut away, flare and tumblehome; wide, narrow, raked or closed transom sterns.
+Fourteen named bow types (bulbous, axe, inverted, X-bow, clipper, spoon, ram, …) and five stern
+types are provided as presets.
 
 The bow is parametrised with the bulb parameters of A. M. Kracht, *Design of Bulbous Bows*,
 SNAME Transactions 86 (1978), pp. 197–217.
@@ -24,9 +28,9 @@ SNAME Transactions 86 (1978), pp. 197–217.
 |---|---|
 | Main dimensions | length, displaced volume (fixed datum, matched exactly), relative beam (the draft follows from the volume), freeboards |
 | Volume distribution | prismatic and midship coefficients, LCB (all matched exactly), forebody fullness, parallel middle body |
-| Bow | waterline convexity, entrance angle, stem rake and curvature |
-| Run | transom immersion (displacement to semi-displacement), breadth (down to an almost closed stern), section shape and rake; keel rise; bilge shape; flare and tumblehome; stern flare |
-| Sections | blend of a deadrise-and-side family with a round family (U / wineglass), separately amidships and at the transom |
+| Bow | waterline convexity, entrance angle, stem rake (also inverted) and curvature, forefoot, bulb size, flare and tumblehome |
+| Run | transom immersion (dry to semi-displacement), breadth (down to a closed stern), section shape and rake; keel rise; bilge shape; flare and tumblehome; stern flare; counter stern with U transom (experimental) |
+| Sections | blend of a deadrise-and-side family with a round family (U / wineglass), separately amidships and at the transom; flat of keel (experimental) |
 | Bulb | Kracht's breadth, length and height parameters, section type (Δ / O / ∇), fairing, nose-up bend, additive or implicit volume |
 
 ## Requirements
@@ -61,7 +65,8 @@ python3 gen_hull_gui.py [--params hull_params.dat] [--limits bounds_file] [--out
 A window with the 3D hull (adjustable transparency and specular reflection; sections, waterlines
 and buttocks on demand) and a column with every parameter (value and slider). The hull is
 recomputed in the background while the sliders move; the status bar reports the main dimensions,
-the displacement and whether the variant is valid. *Save* writes the parameters (`value = name`,
+the displacement and whether the variant is valid. *Bow type* / *Stern type* apply a preset,
+*Import* loads a parameter file (any version), *Save* writes the parameters (`value = name`,
 readable by `gen_hull.py --params`), *Save image* writes a PNG at a selectable resolution.
 
 ## License
